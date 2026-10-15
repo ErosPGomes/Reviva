@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+    <meta name="theme-color" content="#0b1418" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <meta name="description" content="Combate aéreo a baixa altitude no navegador: caças, mísseis, flares e antiaéreas sobre lavouras. Teclado, toque ou controle." />
+    <title>Céu de Aço</title>
+  </head>
+  <body>
+    <canvas id="scene" aria-label="Cena 3D do combate aéreo"></canvas>
+    <canvas id="hud" aria-hidden="true"></canvas>
+
+    <div id="touch" hidden>
+      <div id="stick-zone"><span class="stick-hint">Manche</span></div>
+      <div id="stick-base" hidden><div id="stick-knob"></div></div>
+      <div id="throttle" aria-label="Potência"><div id="throttle-fill"></div><span>POT</span></div>
+      <button type="button" id="btn-gun" class="tbtn tbtn--gun">Canhão</button>
+      <button type="button" id="btn-missile" class="tbtn tbtn--missile">Míssil</button>
+      <button type="button" id="btn-flare" class="tbtn tbtn--flare">Flares</button>
+      <button type="button" id="btn-camera" class="tbtn tbtn--small tbtn--camera" aria-label="Trocar câmera">CAM</button>
+      <button type="button" id="btn-pause" class="tbtn tbtn--small tbtn--pause" aria-label="Pausar">II</button>
+      <p class="rotate-hint">Gire o aparelho para paisagem</p>
+    </div>
+
+    <section id="loading" class="overlay overlay--center">
+      <p class="loading">Gerando terreno<span class="loading__dots">…</span></p>
+    </section>
+
+    <section id="menu" class="overlay" hidden>
+      <div class="panel">
+        <p class="eyebrow">Combate aéreo · baixa altitude</p>
+        <h1 class="title">Céu de Aço</h1>
+        <p class="lede">
+          Três bases inimigas no meio das lavouras e ondas de caças cada vez mais espertos. As antiaéreas disparam
+          rajadas de flak; voar rasante esconde você, até o milharal chegar perto demais.
+        </p>
+        <div class="actions">
+          <button type="button" id="start" class="btn btn--primary">Decolar</button>
+          <p class="best">Recorde <strong id="best">0</strong></p>
+        </div>
+
+        <fieldset class="settings">
+          <legend>Ajustes</legend>
+          <label class="toggle" for="opt-arcade">
+            <input type="checkbox" id="opt-arcade" />
+            <span class="toggle__track" aria-hidden="true"></span>
+            <span class="toggle__text">Pilotagem arcade<small>O manche inclina e o avião curva sozinho</small></span>
+          </label>
+          <label class="toggle" for="opt-invert">
+            <input type="checkbox" id="opt-invert" />
+            <span class="toggle__track" aria-hidden="true"></span>
+            <span class="toggle__text">Inverter eixo vertical<small>Desligado: puxar o manche levanta o nariz</small></span>
+          </label>
+          <label class="toggle" for="opt-quality">
+            <input type="checkbox" id="opt-quality" />
+            <span class="toggle__track" aria-hidden="true"></span>
+            <span class="toggle__text">Gráficos leves<small>Menos resolução e árvores; vale ao recarregar</small></span>
+          </label>
+          <label class="toggle" for="opt-sound">
+            <input type="checkbox" id="opt-sound" />
+            <span class="toggle__track" aria-hidden="true"></span>
+            <span class="toggle__text">Som</span>
+          </label>
+        </fieldset>
+
+        <details class="controls">
+          <summary>Controles</summary>
+          <dl>
+            <dt>Teclado</dt>
+            <dd>
+              <kbd>W</kbd><kbd>S</kbd> arfagem · <kbd>A</kbd><kbd>D</kbd> rolagem · <kbd>Q</kbd><kbd>E</kbd> leme ·
+              <kbd>R</kbd>/<kbd>Shift</kbd> acelera · <kbd>F</kbd> reduz · <kbd>Espaço</kbd> ou clique: canhão ·
+              <kbd>Enter</kbd>, <kbd>M</kbd> ou clique direito: míssil · <kbd>X</kbd> flares · <kbd>C</kbd> câmera ·
+              <kbd>Esc</kbd> pausa
+            </dd>
+            <dt>Toque</dt>
+            <dd>Metade esquerda da tela é o manche. Trilho à direita controla a potência. Botões para canhão, míssil e flares.</dd>
+            <dt>Controle</dt>
+            <dd>Analógico esquerdo voa · direito: leme · RT canhão · A míssil · B flares · LB/RB potência · Y câmera</dd>
+            <dt>Míssil</dt>
+            <dd>Mantenha o alvo no centro até a caixa fechar e ficar vermelha (TRAVADO). Sem trava, o míssil sai reto.</dd>
+          </dl>
+        </details>
+      </div>
+    </section>
+
+    <section id="pause" class="overlay overlay--center" hidden>
+      <div class="panel panel--small">
+        <h2 class="title title--small">Pausa</h2>
+        <div class="stack">
+          <button type="button" id="resume" class="btn btn--primary">Continuar</button>
+          <button type="button" id="restart" class="btn">Reiniciar</button>
+          <button type="button" id="to-menu" class="btn">Menu</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="over" class="overlay overlay--center" hidden>
+      <div class="panel panel--small">
+        <p class="eyebrow eyebrow--red">Fim de missão</p>
+        <h2 class="title title--small" id="over-title">Abatido</h2>
+        <dl class="stats">
+          <div><dt>Pontos</dt><dd id="st-score">0</dd></div>
+          <div><dt>Caças</dt><dd id="st-kills">0</dd></div>
+          <div><dt>Alvos em solo</dt><dd id="st-ground">0</dd></div>
+          <div><dt>Onda</dt><dd id="st-wave">0</dd></div>
+          <div><dt>Tempo de voo</dt><dd id="st-time">0:00</dd></div>
+        </dl>
+        <p class="record" id="st-record" hidden>Novo recorde</p>
+        <div class="stack">
+          <button type="button" id="again" class="btn btn--primary">Voar de novo</button>
+          <button type="button" id="over-menu" class="btn">Menu</button>
+        </div>
+      </div>
+    </section>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
