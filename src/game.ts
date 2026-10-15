@@ -20,17 +20,37 @@ import type { InputFrame } from "./input";
 import { clamp, damp, rand, randSigned } from "./math";
 import { ARENA_RADIUS, type Terrain } from "./terrain";
 import type { Combatant } from "./types";
-import { BulletSystem, ENEMY_MISSILE, FlareSystem, MissileSystem, PLAYER_MISSILE, type WeaponEvents } from "./weapons";
+import {
+  BOOSTS,
+  BOOST_FX,
+  BOOST_ORDER,
+  DIFFICULTIES,
+  GUNS,
+  GUN_ORDER,
+  MISSILES,
+  MISSILE_ORDER,
+  type BoostId,
+  type Difficulty,
+  type GunId,
+  type MissileId,
+} from "./loadout";
+import { BulletSystem, ENEMY_MISSILE, FlareSystem, MissileSystem, type WeaponEvents } from "./weapons";
 import { buildWorld, type Quality, type World } from "./world";
+
+const BOOSTED_JET = { ...PLAYER_JET, maxSpeed: PLAYER_JET.maxSpeed * BOOST_FX.speedMax, maxThrust: PLAYER_JET.maxThrust * BOOST_FX.speedThrust };
 
 export interface Settings {
   arcade: boolean;
   invertY: boolean;
   quality: Quality;
   sound: boolean;
+  difficulty: Difficulty;
+  gun: GunId;
+  missile: MissileId;
 }
 
 export interface GameStats {
+  bestStreak: number;
   score: number;
   kills: number;
   groundKills: number;
@@ -62,9 +82,23 @@ export const COLORS = { teal: "#5fe3cf", amber: "#ffa043", red: "#ff5146", white
 
 const CALLSIGNS = ["Víbora", "Corvo", "Lobo", "Chacal", "Cobra", "Abutre", "Escorpião"];
 const PLAYER_START = new THREE.Vector3(0, 0, 4300);
-const LOCK_TIME = 1.3;
-const RAIL_RELOAD = 5.5;
 const OUT_LIMIT = 10;
+
+export interface DamageIndicator {
+  readonly from: THREE.Vector3;
+  readonly t: number;
+}
+
+export interface Popup {
+  readonly text: string;
+  readonly color: string;
+  readonly t: number;
+}
+
+const freshRails = (): Record<MissileId, number[]> =>
+  Object.fromEntries(MISSILE_ORDER.map((id) => [id, new Array<number>(MISSILES[id].rails).fill(0)])) as Record<MissileId, number[]>;
+const freshBoosts = (): Record<BoostId, number> =>
+  Object.fromEntries(BOOST_ORDER.map((id) => [id, 0])) as Record<BoostId, number>;
 
 const _v = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
@@ -107,6 +141,21 @@ export class Game {
   readonly threat = { missiles: 0, nearest: Infinity, from: null as THREE.Vector3 | null, locking: false };
   messages: HudMessage[] = [];
   feed: FeedLine[] = [];
+  /** Tempo necessário para travar com o míssil selecionado (o HUD desenha o progresso). */
+  get lockTimeNeeded(): number {
+    return MISSILES[this.missile].lockTime;
+  }
+
+  /* Armamento e boosts do jogador */
+  gun: GunId = "cal50";
+  missile: MissileId = "ir";
+  rails = freshRails();
+  boosts = freshBoosts();
+  streak = 0;
+  bestStreak = 0;
+  damageIndicators: DamageIndicator[] = [];
+  popups: Popup[] = [];
+  private streakTimer = 0;
   onGameOver: (s: GameStats) => void = () => {};
 
   private pendingWave = false;
@@ -203,6 +252,13 @@ export class Game {
     this.messages = [];
     this.feed = [];
     this.damageFlash = this.hitMarker = this.killMarker = 0;
+    this.gun = this.settings.gun;
+    this.missile = this.settings.missile;
+    this.rails = freshRails();
+    this.boosts = freshBoosts();
+    this.streak = this.bestStreak = this.streakTimer = 0;
+    this.damageIndicators = [];
+    this.popups = [];
     this.phase = "playing";
     this.message("Neutralize as bases A, B e C", COLORS.teal, true);
   }
@@ -227,7 +283,29 @@ export class Game {
   }
 
   stats(): GameStats {
-    return { score: this.score, kills: this.kills, groundKills: this.groundKills, wave: this.wave, time: this.flightTime };
+    return { score: this.score, kills: this.kills, groundKills: this.groundKills, wave: this.wave, time: this.flightTime, bestStreak: this.bestStreak };
+  }
+
+  get difficulty() {
+    return DIFFICULTIES[this.settings.difficulty];
+  }
+
+  boostActive(id: BoostId): boolean {
+    return this.boosts[id] > 0;
+  }
+
+  private grantBoost(id: BoostId): void {
+    const b = BOOSTS[id];
+    const was = this.boosts[id] > 0;
+    this.boosts[id] = Math.min(b.max, this.boosts[id] + b.duration);
+    this.message(`${was ? "Renovado" : "Boost"}: ${b.label}`, b.color);
+  }
+
+  private addScore(base: number, label: string): void {
+    const pts = Math.round(base * this.difficulty.scoreMult);
+    this.score += pts;
+    this.popups.push({ text: `+${pts} ${label}`, color: COLORS.amber, t: this.time });
+    if (this.popups.length > 4) this.popups.shift();
   }
 
   /* ---------------- Laço principal ---------------- */
@@ -314,25 +392,31 @@ export class Game {
     c.pitch = inp.stickY;
     c.yaw = inp.yaw;
     c.throttle = inp.throttle;
-    stepFlight(p.flight, c, dt, p.params);
+    // Boost de velocidade: parâmetros de voo temporários (teto e empuxo maiores), sem mutar a constante.
+    stepFlight(p.flight, c, dt, this.boostActive("speed") ? BOOSTED_JET : p.params);
     this.flightTime += dt;
 
     if (inp.camera) this.cameraMode = this.cameraMode === "chase" ? "cockpit" : "chase";
+    if (inp.switchGun) this.cycleGun();
+    if (inp.switchMissile) this.cycleMissile();
 
-    // Canhão com superaquecimento: rajadas curtas rendem mais que segurar o gatilho.
+    // Metralhadora com superaquecimento: rajadas curtas rendem mais que segurar o gatilho.
+    const gun = GUNS[this.gun];
+    const dmgMult = this.boostActive("damage") ? BOOST_FX.damage : 1;
+    const heatMult = this.boostActive("reload") ? BOOST_FX.heatRate : 1;
     p.gunCooldown -= dt;
     const firing = inp.gun && !p.overheated;
     if (firing) {
       let shots = 0;
-      while (p.gunCooldown <= 0 && shots < 3) {
-        this.fireGun(p, 9, 0.004, 0xffd38a);
-        p.gunCooldown += 0.055;
-        p.gunHeat += 0.022;
+      while (p.gunCooldown <= 0 && shots < 4) {
+        this.fireGun(p, gun.damage * dmgMult, gun.spread, gun.color, gun.speed, gun.life, gun.splash);
+        p.gunCooldown += gun.interval;
+        p.gunHeat += gun.heat * heatMult;
         shots++;
       }
       if (p.gunHeat >= 1) {
         p.overheated = true;
-        this.message("Canhão superaquecido", COLORS.red);
+        this.message(`${gun.name} superaquecida`, COLORS.red);
       }
     } else {
       p.gunCooldown = Math.max(p.gunCooldown, 0);
@@ -353,7 +437,24 @@ export class Game {
       }
     }
 
-    if (p.lastHitAt < this.time - 6) p.health = Math.min(100, p.health + 5 * dt);
+    const diff = this.difficulty;
+    if (p.lastHitAt < this.time - diff.regenDelay) p.health = Math.min(100, p.health + diff.regenRate * dt);
+
+    // Trilhos de todos os tipos recarregam em paralelo (trocar de míssil não perde recarga).
+    const reloadRate = this.boostActive("reload") ? BOOST_FX.reloadRate : 1;
+    for (const id of MISSILE_ORDER) {
+      const r = this.rails[id];
+      for (let k = 0; k < r.length; k++) r[k] = Math.max(0, r[k]! - dt * reloadRate);
+    }
+    const cur = this.rails[this.missile];
+    p.rails[0] = cur[0] ?? 0;
+    p.rails[1] = cur[1] ?? cur[0] ?? 0;
+
+    for (const id of BOOST_ORDER) this.boosts[id] = Math.max(0, this.boosts[id] - dt);
+    if (this.streak > 0) {
+      this.streakTimer -= dt;
+      if (this.streakTimer <= 0) this.streak = 0;
+    }
 
     const f = p.flight;
     _v.copy(f.pos).addScaledVector(f.vel, 3);
@@ -368,30 +469,58 @@ export class Game {
     } else this.outTimer = 0;
   }
 
-  private fireGun(a: Aircraft, damage: number, spread: number, color: number): void {
+  private cycleGun(): void {
+    this.gun = GUN_ORDER[(GUN_ORDER.indexOf(this.gun) + 1) % GUN_ORDER.length]!;
+    this.player.gunHeat = Math.max(this.player.gunHeat, 0.25); // troca não é grátis: evita "trocar para esfriar"
+    this.message(GUNS[this.gun].name, COLORS.white);
+  }
+
+  private cycleMissile(): void {
+    this.missile = MISSILE_ORDER[(MISSILE_ORDER.indexOf(this.missile) + 1) % MISSILE_ORDER.length]!;
+    this.lock.target = null;
+    this.lock.time = 0;
+    this.lock.locked = false;
+    this.message(MISSILES[this.missile].name, COLORS.white);
+  }
+
+  private fireGun(a: Aircraft, damage: number, spread: number, color: number, speed = 1100, life = 1.8, splash = 0): void {
     const q = a.flight.quat;
     forwardOf(q, _fwd);
     rightOf(q, _right);
     upOf(q, _up);
     a.gunSide = -a.gunSide;
     _v.copy(a.flight.pos).addScaledVector(_fwd, 8.5).addScaledVector(_right, a.gunSide * 0.9).addScaledVector(_up, 0.2);
-    this.bullets.fire(a, a.team, _v, _fwd, 1100, a.flight.vel, damage, spread, 1.8, color, false);
+    this.bullets.fire(a, a.team, _v, _fwd, speed, a.flight.vel, damage, spread, life, color, false, splash);
     this.effects.glow.emit(FX.muzzle, _v.x, _v.y, _v.z, a.flight.vel.x, a.flight.vel.y, a.flight.vel.z);
     this.sfx.gun(a === this.player ? 0 : a.flight.pos.distanceTo(this.camera.position));
   }
 
   private firePlayerMissile(): void {
     const p = this.player;
-    const rail = p.rails[0] <= 0 ? 0 : p.rails[1] <= 0 ? 1 : null;
-    if (rail === null) return;
-    p.rails[rail] = RAIL_RELOAD;
+    const spec = MISSILES[this.missile];
+    const rails = this.rails[this.missile];
+    const rail = rails.findIndex((r) => r <= 0);
+    if (rail < 0) return;
+    rails[rail] = spec.reload;
     const q = p.flight.quat;
     forwardOf(q, _fwd);
     rightOf(q, _right);
     upOf(q, _up);
-    _v.copy(p.flight.pos).addScaledVector(_right, rail === 0 ? 3.6 : -3.6).addScaledVector(_up, -0.9);
+    const dmg = this.boostActive("damage") ? BOOST_FX.damage : 1;
+    if (!spec.guided) {
+      // Salva de foguetes: leque pequeno a partir dos dois casulos.
+      for (let k = 0; k < spec.salvo; k++) {
+        const side = k % 2 ? 1 : -1;
+        _v.copy(p.flight.pos).addScaledVector(_right, side * 3.6).addScaledVector(_up, -0.9).addScaledVector(_fwd, k * 1.5);
+        _v2.copy(_fwd).addScaledVector(_right, randSigned() * 0.018).addScaledVector(_up, randSigned() * 0.018).normalize();
+        this.missiles.launch(p, "blue", _v, _v2, p.flight.speed + 40, null, spec.spec, dmg);
+      }
+      this.sfx.missile();
+      return;
+    }
+    _v.copy(p.flight.pos).addScaledVector(_right, rail % 2 === 0 ? 3.6 : -3.6).addScaledVector(_up, -0.9);
     const target = this.lock.locked ? this.lock.target : null;
-    this.missiles.launch(p, "blue", _v, _fwd, p.flight.speed + 15, target, PLAYER_MISSILE);
+    this.missiles.launch(p, "blue", _v, _fwd, p.flight.speed + 15, target, spec.spec, dmg);
     this.sfx.missile();
   }
 
@@ -437,8 +566,9 @@ export class Game {
 
   private spawnWave(): void {
     this.wave++;
-    const count = Math.min(1 + this.wave, 7);
-    const skill = Math.min(0.3 + this.wave * 0.09, 0.95);
+    const diff = this.difficulty;
+    const count = clamp(1 + this.wave + diff.extraEnemies, 1, 8);
+    const skill = clamp(0.3 + this.wave * 0.09 + diff.skillOffset, 0.05, 1);
     const p = this.player.flight.pos;
     for (let i = 0; i < count; i++) {
       const a = rand(-1.2, 1.2) + Math.atan2(-p.x, -p.z);
@@ -467,7 +597,7 @@ export class Game {
       a.gunCooldown -= dt;
       if (out.fireGun && target.alive && this.phase === "playing") {
         while (a.gunCooldown <= 0) {
-          this.fireGun(a, 3 + this.wave * 0.35, 0.013 - e.pilot.skill * 0.006, 0xff6a4a);
+          this.fireGun(a, (3 + this.wave * 0.35) * this.difficulty.enemyDamage, 0.013 - e.pilot.skill * 0.006, 0xff6a4a);
           a.gunCooldown += 0.09;
         }
       } else a.gunCooldown = Math.max(a.gunCooldown, 0);
@@ -515,7 +645,7 @@ export class Game {
       const pAlt = p.flight.pos.y - this.terrain.heightAt(p.flight.pos.x, p.flight.pos.z);
       if (t.burstLeft === 0 && t.fireTimer <= 0 && pAlt > 15) {
         t.burstLeft = 8 + Math.min(this.wave, 6);
-        t.fireTimer = rand(2.2, 3.6) - Math.min(1, this.wave * 0.1);
+        t.fireTimer = (rand(2.2, 3.6) - Math.min(1, this.wave * 0.1)) * this.difficulty.aaCooldown;
       }
       t.shotTimer -= dt;
       while (t.burstLeft > 0 && t.shotTimer <= 0) {
@@ -523,7 +653,7 @@ export class Game {
         t.shotTimer += 0.075;
         _v2.copy(t.position).setY(t.position.y + 2.5);
         const dir = _v.clone().sub(_v2).normalize();
-        this.bullets.fire(t, "red", _v2, dir, 850, new THREE.Vector3(), 3, 0.012, tof + rand(-0.15, 0.3), 0xffa64a, true);
+        this.bullets.fire(t, "red", _v2, dir, 850, new THREE.Vector3(), 3 * this.difficulty.aaDamage, 0.012, tof + rand(-0.15, 0.3), 0xffa64a, true);
         this.sfx.gun(t.position.distanceTo(this.camera.position) + 400);
       }
       if (t.shotTimer < 0 && t.burstLeft === 0) t.shotTimer = 0;
@@ -536,6 +666,13 @@ export class Game {
     if (!target.isAlive() || amount <= 0) return;
     const byPlayer = owner === this.player;
     if (target instanceof Aircraft) {
+      if (target === this.player) {
+        amount *= this.difficulty.damageTaken * (this.boostActive("shield") ? BOOST_FX.shield : 1);
+        if (owner) {
+          this.damageIndicators.push({ from: owner.position.clone(), t: this.time });
+          if (this.damageIndicators.length > 6) this.damageIndicators.shift();
+        }
+      }
       target.health -= amount;
       target.lastHitAt = this.time;
       if (target === this.player) {
@@ -578,11 +715,19 @@ export class Game {
       return;
     }
     if (owner === this.player) {
-      this.score += 100;
       this.kills++;
       this.killMarker = 0.5;
-      this.message("+100  Caça abatido", COLORS.amber, true);
+      this.streak++;
+      this.bestStreak = Math.max(this.bestStreak, this.streak);
+      this.streakTimer = BOOST_FX.streakWindow;
+      this.addScore(100 + (this.streak - 1) * 25, "abate");
+      this.message(this.streak > 1 ? `Caça abatido · sequência x${this.streak}` : "Caça abatido", COLORS.amber, true);
       this.log(`Você abateu ${a.name}`, true);
+      // Recompensas: todo abate dá velocidade e um reparo; sequências liberam recarga e munição perfurante.
+      this.grantBoost("speed");
+      this.player.health = Math.min(100, this.player.health + 10);
+      if (this.streak % 2 === 0) this.grantBoost("reload");
+      if (this.streak % 3 === 0) this.grantBoost("damage");
     } else {
       this.log(`${a.name} caiu`, false);
     }
@@ -594,15 +739,19 @@ export class Game {
     this.sfx.explosion(t.position.distanceTo(this.camera.position));
     if (this.lock.target === t) this.lock.target = null;
     if (owner === this.player) {
-      this.score += t.score;
       this.groundKills++;
-      this.message(`+${t.score}  ${t.label} destruído`, COLORS.amber);
+      this.addScore(t.score, t.label.toLowerCase());
+      this.player.health = Math.min(100, this.player.health + 4);
     }
     const base = t.base;
     if (!base.captured && base.remaining === 0) {
       base.captured = true;
-      this.score += 250;
-      this.message(`Base ${base.id} neutralizada  +250`, COLORS.teal, true);
+      this.addScore(250, `base ${base.id}`);
+      this.message(`Base ${base.id} neutralizada`, COLORS.teal, true);
+      // Base caída: blindagem, todos os trilhos recarregados e flares cheios.
+      this.grantBoost("shield");
+      for (const id of MISSILE_ORDER) this.rails[id].fill(0);
+      this.player.flares = MAX_FLARES;
       this.log(`Base ${base.id} neutralizada`, true);
       if (this.bases.every((b) => b.captured)) {
         this.rebuildTimer = 35;
@@ -665,12 +814,19 @@ export class Game {
       l.locked = false;
       return;
     }
+    const spec = MISSILES[this.missile];
+    if (!spec.guided) {
+      l.target = null;
+      l.locked = false;
+      return;
+    }
     forwardOf(p.flight.quat, _fwd);
     const angleTo = (t: Combatant) => _fwd.angleTo(_v.subVectors(t.position, p.flight.pos));
-    const range = (t: Combatant) => (t.kind === "air" ? 3200 : 2600);
-    const cone = (t: Combatant) => (t.kind === "air" ? 0.3 : 0.22);
+    // Cada míssil define o que trava, até onde e em que cone (radar: longe e estreito; AGM: só solo).
+    const canTarget = (t: Combatant) => spec.targets === "any" || spec.targets === t.kind;
+    const range = (t: Combatant) => (t.kind === "ground" ? Math.min(spec.range, 3600) : spec.range);
     const valid = (t: Combatant, slack: number) =>
-      t.isAlive() && t.position.distanceTo(p.flight.pos) < range(t) && angleTo(t) < cone(t) * slack;
+      t.isAlive() && canTarget(t) && t.position.distanceTo(p.flight.pos) < range(t) && angleTo(t) < spec.cone * slack;
 
     // Alvo atual tem histerese (cone 40% maior) para a trava não pular entre alvos próximos.
     if (l.target && valid(l.target, 1.4)) {
@@ -689,7 +845,7 @@ export class Game {
       l.target = best;
       l.time = 0;
     }
-    l.locked = !!l.target && l.time >= LOCK_TIME;
+    l.locked = !!l.target && l.time >= spec.lockTime;
   }
 
   private updateThreat(): void {
@@ -708,8 +864,10 @@ export class Game {
       if (!alive && !this.pendingWave) {
         this.pendingWave = true;
         this.waveTimer = 5;
-        this.score += 200;
-        this.message(`Onda ${this.wave} concluída  +200`, COLORS.teal, true);
+        if (this.wave > 0) {
+          this.addScore(200, "onda");
+          this.message(`Onda ${this.wave} concluída`, COLORS.teal, true);
+        }
       }
       if (this.pendingWave) {
         this.waveTimer -= dt;
@@ -785,7 +943,7 @@ export class Game {
     }
 
     const ab = Math.max(0, (f.throttle - 0.85) / 0.15);
-    const fov = 62 + clamp((f.speed - 150) / 160, 0, 1) * 9 + ab * 3;
+    const fov = 62 + clamp((f.speed - 150) / 160, 0, 1) * 9 + ab * 3 + (this.boostActive("speed") ? 5 : 0);
     if (Math.abs(fov - this.lastFov) > 0.05) {
       cam.fov = this.lastFov = this.lastFov + (fov - this.lastFov) * damp(3, dt);
       cam.updateProjectionMatrix();

@@ -22,6 +22,7 @@ export class GroundTarget implements Combatant {
   readonly label: string;
   readonly model: GroundModel;
   health: number;
+  readonly maxHealth: number;
   alive = true;
   fireTimer = Math.random() * 3;
   burstLeft = 0;
@@ -30,7 +31,7 @@ export class GroundTarget implements Combatant {
 
   constructor(readonly type: GroundKind, readonly base: Base, pos: THREE.Vector3, yaw: number) {
     const st = STATS[type];
-    this.health = st.health;
+    this.health = this.maxHealth = st.health;
     this.radius = st.radius;
     this.score = st.score;
     this.label = st.label;

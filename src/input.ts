@@ -10,6 +10,8 @@ export interface InputFrame {
   flare: boolean;
   camera: boolean;
   pause: boolean;
+  switchGun: boolean;
+  switchMissile: boolean;
 }
 
 const DEADZONE = 0.12;
@@ -46,7 +48,7 @@ export class Input {
     };
     window.addEventListener("keydown", (e) => {
       if (e.repeat) return;
-      if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code)) e.preventDefault();
+      if (["Space", "Tab", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code) && !(e.target instanceof HTMLInputElement || e.target instanceof HTMLButtonElement) ) e.preventDefault();
       this.keys.add(e.code);
       this.edges.add(e.code);
       setTouch(false);
@@ -72,7 +74,7 @@ export class Input {
   }
 
   private bindTouch(ui: TouchUI): void {
-    const { zone, base, knob, throttle, throttleFill, gun, missile, flare, camera, pause } = ui;
+    const { zone, base, knob, throttle, throttleFill, gun, missile, flare, camera, pause, gunSwitch, missileSwitch } = ui;
     zone.addEventListener("pointerdown", (e) => {
       if (this.stick.id !== -1) return;
       zone.setPointerCapture(e.pointerId);
@@ -144,6 +146,8 @@ export class Input {
     tap(flare, "Touch:flare");
     tap(camera, "Touch:camera");
     tap(pause, "Touch:pause");
+    tap(gunSwitch, "Touch:gunSwitch");
+    tap(missileSwitch, "Touch:missileSwitch");
   }
 
   private edge(...codes: string[]): boolean {
@@ -194,6 +198,8 @@ export class Input {
       flare: this.edge("KeyX", "KeyL", "Touch:flare") || !!padEdge[1],
       camera: this.edge("KeyC", "Touch:camera") || !!padEdge[3],
       pause: this.edge("Escape", "KeyP", "Touch:pause") || !!padEdge[9],
+      switchGun: this.edge("KeyG", "Touch:gunSwitch") || !!padEdge[12],
+      switchMissile: this.edge("KeyT", "Tab", "Touch:missileSwitch") || !!padEdge[2],
     };
     this.edges.clear();
     return frame;
@@ -232,4 +238,6 @@ export interface TouchUI {
   flare: HTMLElement;
   camera: HTMLElement;
   pause: HTMLElement;
+  gunSwitch: HTMLElement;
+  missileSwitch: HTMLElement;
 }

@@ -28,6 +28,7 @@ class Bullet {
   owner: Combatant | null = null;
   damage = 0;
   airburst = false;
+  splash = 0;
 }
 
 const BULLET_GRAVITY = 4.9; // meia gravidade: queda perceptível sem exigir compensação manual
@@ -72,6 +73,7 @@ export class BulletSystem {
     life: number,
     color: number,
     airburst: boolean,
+    splash = 0,
   ): void {
     if (this.live >= this.pool.length) return;
     const b = this.pool[this.live++]!;
@@ -84,6 +86,7 @@ export class BulletSystem {
     b.owner = owner;
     b.damage = damage;
     b.airburst = airburst;
+    b.splash = splash;
     b.color.setHex(color);
   }
 
@@ -104,6 +107,11 @@ export class BulletSystem {
           if (segmentPointDistSq(b.prev, b.pos, t.position) < t.radius * t.radius) {
             this.events.hit(t, b.damage, b.owner, b.pos);
             this.fx.hitSparks(b.pos);
+            // Munição explosiva (20 mm): estilhaço atinge quem estiver perto do ponto de impacto.
+            if (b.splash > 0) {
+              this.fx.airburst(b.pos);
+              this.events.splash(b.pos, b.splash, b.damage * 0.35, b.team, b.owner);
+            }
             dead = true;
             break;
           }
@@ -204,14 +212,16 @@ export class FlareSystem {
 /* ---------------- Mísseis ---------------- */
 
 export interface MissileSpec {
+  readonly flareResist: number; // 0 = sempre enganado por flare, 1 = imune
+  readonly splash: number; // raio da ogiva
+  readonly motorTime: number; // s de motor acelerando
   readonly damage: number;
   readonly maxSpeed: number;
   readonly turnRate: number; // rad/s
   readonly gimbal: number; // ângulo máximo entre eixo e alvo antes de perder a trava
 }
 
-export const PLAYER_MISSILE: MissileSpec = { damage: 100, maxSpeed: 720, turnRate: 0.9, gimbal: 1.3 };
-export const ENEMY_MISSILE: MissileSpec = { damage: 48, maxSpeed: 640, turnRate: 0.72, gimbal: 1.15 };
+export const ENEMY_MISSILE: MissileSpec = { damage: 48, maxSpeed: 640, turnRate: 0.72, gimbal: 1.15, flareResist: 0.2, splash: 30, motorTime: 2.6 };
 
 export class Missile {
   readonly pos = new THREE.Vector3();
@@ -222,7 +232,8 @@ export class Missile {
   target: Trackable | null = null;
   owner: Combatant | null = null;
   team: Team = "blue";
-  spec: MissileSpec = PLAYER_MISSILE;
+  spec: MissileSpec = ENEMY_MISSILE;
+  damageMult = 1;
   trail = 0;
   done = false;
 
@@ -230,7 +241,6 @@ export class Missile {
 }
 
 const MISSILE_LIFE = 10;
-const MOTOR_TIME = 2.6;
 const PROXIMITY = 13;
 
 export class MissileSystem {
@@ -240,7 +250,7 @@ export class MissileSystem {
 
   constructor(private readonly scene: THREE.Scene, private readonly terrain: Terrain, private readonly fx: Effects, private readonly events: WeaponEvents) {}
 
-  launch(owner: Combatant, team: Team, origin: THREE.Vector3, dir: THREE.Vector3, speed: number, target: Trackable | null, spec: MissileSpec): Missile {
+  launch(owner: Combatant, team: Team, origin: THREE.Vector3, dir: THREE.Vector3, speed: number, target: Trackable | null, spec: MissileSpec, damageMult = 1): Missile {
     const mesh = this.spare.pop() ?? createMissileMesh();
     this.scene.add(mesh);
     const m = new Missile(mesh);
@@ -252,6 +262,7 @@ export class MissileSystem {
     m.owner = owner;
     m.team = team;
     m.spec = spec;
+    m.damageMult = damageMult;
     this.active.push(m);
     return m;
   }
@@ -266,9 +277,11 @@ export class MissileSystem {
     this.spare.push(m.mesh);
   }
 
-  /** Flares: cada míssil que persegue `victim` tem `chance` de trocar de alvo para o flare. */
+  /** Flares: cada míssil que persegue `victim` tem `chance × (1 − flareResist)` de trocar de alvo. */
   decoy(victim: Trackable, flare: Flare, chance: number): void {
-    for (const m of this.active) if (m.target === victim && Math.random() < chance) m.target = flare;
+    for (const m of this.active) {
+      if (m.target === victim && Math.random() < chance * (1 - m.spec.flareResist)) m.target = flare;
+    }
   }
 
   threatsTo(victim: Trackable): { count: number; nearest: number; from: THREE.Vector3 | null } {
@@ -292,7 +305,7 @@ export class MissileSystem {
       const m = this.active[i]!;
       m.age += dt;
       m.prev.copy(m.pos);
-      m.speed = m.age < MOTOR_TIME ? Math.min(m.spec.maxSpeed, m.speed + 240 * dt) : Math.max(150, m.speed - 30 * dt);
+      m.speed = m.age < m.spec.motorTime ? Math.min(m.spec.maxSpeed, m.speed + 240 * dt) : Math.max(150, m.speed - 30 * dt);
 
       if (m.target && !m.target.isAlive()) m.target = null;
       if (m.target && m.age > 0.25) {
@@ -320,10 +333,11 @@ export class MissileSystem {
       const ground = m.pos.y < this.terrain.heightAt(m.pos.x, m.pos.z);
 
       if (hit || ground || nearFlare || m.age > MISSILE_LIFE) {
-        if (hit) this.events.hit(hit, m.spec.damage, m.owner, m.pos);
+        const dmg = m.spec.damage * m.damageMult;
+        if (hit) this.events.hit(hit, dmg, m.owner, m.pos);
         if (hit || ground || nearFlare) {
-          this.events.splash(m.pos, 30, m.spec.damage * 0.5, m.team, m.owner);
-          this.events.explosion(m.pos, ground ? 1.1 : 0.8);
+          this.events.splash(m.pos, m.spec.splash, dmg * 0.5, m.team, m.owner);
+          this.events.explosion(m.pos, (ground ? 1.1 : 0.8) * Math.max(0.6, m.spec.splash / 30));
           if (ground) this.fx.dust(m.pos, 2);
         }
         this.release(m);
@@ -336,7 +350,7 @@ export class MissileSystem {
       this.look.lookAt(m.pos, _tmp.copy(m.pos).add(m.dir), THREE.Object3D.DEFAULT_UP);
       m.mesh.quaternion.setFromRotationMatrix(this.look);
 
-      if (m.age < MOTOR_TIME + 0.4) {
+      if (m.age < m.spec.motorTime + 0.4) {
         this.fx.glow.emit(FX.motor, m.pos.x - m.dir.x * 1.8, m.pos.y - m.dir.y * 1.8, m.pos.z - m.dir.z * 1.8, 0, 0, 0);
         m.trail += dt;
         // Fumaça a cada ~6 m de voo: rastro contínuo independente da taxa de quadros.

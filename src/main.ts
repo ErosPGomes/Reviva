@@ -5,6 +5,7 @@ import { Sfx } from "./audio";
 import { Game, type GameStats, type Settings } from "./game";
 import { Hud } from "./hud";
 import { Input, type TouchUI } from "./input";
+import { DIFFICULTIES, GUNS, GUN_ORDER, MISSILES, MISSILE_ORDER, type Difficulty } from "./loadout";
 
 type UiState = "menu" | "playing" | "paused" | "over";
 
@@ -36,7 +37,19 @@ function save(key: string, value: unknown): void {
 }
 
 const coarse = window.matchMedia("(pointer: coarse)").matches;
-const settings: Settings = load<Settings>(SETTINGS_KEY, { arcade: true, invertY: false, quality: coarse ? "low" : "high", sound: true });
+const settings: Settings = load<Settings>(SETTINGS_KEY, {
+  arcade: true,
+  invertY: false,
+  quality: coarse ? "low" : "high",
+  sound: true,
+  difficulty: "piloto",
+  gun: "cal50",
+  missile: "ir",
+});
+// Valores salvos por versões antigas (ou editados à mão) não podem quebrar as tabelas de armamento.
+if (!(settings.difficulty in DIFFICULTIES)) settings.difficulty = "piloto";
+if (!(settings.gun in GUNS)) settings.gun = "cal50";
+if (!(settings.missile in MISSILES)) settings.missile = "ir";
 let best = load<{ v: number }>(BEST_KEY, { v: 0 }).v;
 
 const ui = {
@@ -59,6 +72,8 @@ const touchUi: TouchUI = {
   flare: $("btn-flare"),
   camera: $("btn-camera"),
   pause: $("btn-pause"),
+  gunSwitch: $("btn-gun-switch"),
+  missileSwitch: $("btn-missile-switch"),
 };
 
 let state: UiState = "menu";
@@ -93,6 +108,37 @@ function bindSetting(id: string, get: () => boolean, set: (v: boolean) => void):
     save(SETTINGS_KEY, settings);
   });
 }
+
+/** Grupo de chips (radio) gerado a partir das tabelas do loadout: nova arma = nova linha na tabela, sem HTML. */
+function bindPicker<K extends string>(id: string, order: readonly K[], label: (k: K) => string, desc: (k: K) => string, get: () => K, set: (k: K) => void): void {
+  const root = $(id);
+  const chips = root.querySelector<HTMLElement>(".chips")!;
+  const descEl = root.querySelector<HTMLElement>(".picker__desc")!;
+  const buttons = order.map((k) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "chip";
+    b.setAttribute("role", "radio");
+    b.textContent = label(k);
+    b.addEventListener("click", () => {
+      set(k);
+      save(SETTINGS_KEY, settings);
+      sync();
+    });
+    chips.appendChild(b);
+    return b;
+  });
+  const sync = () => {
+    buttons.forEach((b, i) => b.setAttribute("aria-checked", String(order[i] === get())));
+    descEl.textContent = desc(get());
+  };
+  sync();
+}
+
+const DIFF_ORDER = Object.keys(DIFFICULTIES) as Difficulty[];
+bindPicker("pick-difficulty", DIFF_ORDER, (k) => DIFFICULTIES[k].label, (k) => DIFFICULTIES[k].desc, () => settings.difficulty, (k) => (settings.difficulty = k));
+bindPicker("pick-gun", GUN_ORDER, (k) => GUNS[k].short, (k) => `${GUNS[k].name} · ${GUNS[k].desc}`, () => settings.gun, (k) => (settings.gun = k));
+bindPicker("pick-missile", MISSILE_ORDER, (k) => MISSILES[k].short, (k) => `${MISSILES[k].name} · ${MISSILES[k].desc}`, () => settings.missile, (k) => (settings.missile = k));
 
 bindSetting("opt-arcade", () => settings.arcade, (v) => (settings.arcade = v));
 bindSetting("opt-invert", () => settings.invertY, (v) => (input.invertY = settings.invertY = v));
@@ -155,6 +201,8 @@ function gameOver(s: GameStats): void {
   $("st-kills").textContent = String(s.kills);
   $("st-ground").textContent = String(s.groundKills);
   $("st-wave").textContent = String(s.wave);
+  $("st-streak").textContent = String(s.bestStreak);
+  $("st-diff").textContent = DIFFICULTIES[settings.difficulty].label;
   const sec = Math.floor(s.time);
   $("st-time").textContent = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
   $("st-record").hidden = !record;
