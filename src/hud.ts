@@ -1,9 +1,12 @@
 import * as THREE from "three";
-import { MAX_FLARES, Aircraft } from "./aircraft";
+import { Aircraft } from "./aircraft";
 import { GroundTarget } from "./ground";
 import { bankAngle, forwardOf, pitchAngle } from "./flight";
 import { COLORS, type Game } from "./game";
 import { BOOSTS, BOOST_ORDER, GUNS, MISSILES } from "./loadout";
+import { PHASES } from "./campaign";
+import { DRONE_SHOTS, WARHEADS } from "./drone";
+import { RING_INFO } from "./rings";
 import { clamp, formatDistance } from "./math";
 import { ctx2d } from "./textures";
 import { ARENA_RADIUS } from "./terrain";
@@ -94,6 +97,11 @@ export class Hud {
     c.textBaseline = "middle";
     this.measureG(g);
 
+    if (g.drone.active && p.alive) {
+      this.droneView(g, cam);
+      this.messages(g);
+      return;
+    }
     this.vignette(g);
     if (!p.alive) {
       this.messages(g);
@@ -102,6 +110,7 @@ export class Hud {
 
     const compact = this.w < 700 || (this.touchLayout && this.h < 500);
     this.bases(g, cam);
+    this.rings(g, cam);
     this.ground(g, cam);
     this.enemies(g, cam);
     this.pitchLadder(g, compact);
@@ -114,7 +123,9 @@ export class Hud {
     this.weapons(g, compact);
     this.radar(g, compact);
     this.targetPanel(g, compact);
-    this.scoreboard(g, compact);
+    const below = this.scoreboard(g, compact);
+    this.objectives(g, below + 22);
+    this.droneBar(g, compact);
     this.warnings(g);
     this.popups(g);
     this.messages(g);
@@ -248,6 +259,137 @@ export class Hud {
     }
   }
 
+  private rings(g: Game, cam: THREE.Camera): void {
+    const c = this.ctx;
+    const pp = g.player.flight.pos;
+    for (const r of g.rings.rings) {
+      if (!r.active) continue;
+      const d = pp.distanceTo(r.center);
+      if (d > 4000) continue;
+      const s = this.project(r.center, cam);
+      if (!s.onScreen) continue;
+      const color = RING_INFO[r.kind].color;
+      c.strokeStyle = color;
+      c.lineWidth = 1.5;
+      c.setLineDash([4, 4]);
+      c.beginPath();
+      c.arc(s.x, s.y, 11, 0, TAU);
+      c.stroke();
+      c.setLineDash([]);
+      this.text(formatDistance(d), s.x, s.y + 20, 10, color);
+    }
+  }
+
+  /** Objetivos da fase (campanha) logo abaixo do placar; cartão central no início da fase. */
+  private objectives(g: Game, startY: number): void {
+    if (!g.campaign) return;
+    const ph = g.currentPhase;
+    const list = g.objectives();
+    const x = 16;
+    let y = startY;
+    this.text(`FASE ${g.phaseIndex + 1}/${PHASES.length} · ${ph.title.toUpperCase()}`, x, y, 11, COLORS.teal, "left", 700);
+    for (const o of list) {
+      y += 16;
+      const color = o.done ? COLORS.teal : COLORS.white;
+      this.text(`${o.done ? "✓" : "○"} ${o.label}  ${o.current}/${o.need}`, x, y, 11, color, "left", o.done ? 700 : 500);
+    }
+    if (g.phaseBanner > 0) {
+      const a = clamp(g.phaseBanner, 0, 1);
+      this.ctx.globalAlpha = a;
+      this.text(`FASE ${g.phaseIndex + 1}`, this.w / 2, this.h * 0.36, 28, COLORS.white, "center", 700);
+      this.text(ph.title.toUpperCase(), this.w / 2, this.h * 0.36 + 28, 15, COLORS.teal, "center", 700);
+      this.ctx.globalAlpha = 1;
+    }
+  }
+
+  /** Barra roxa do drone, logo acima do painel de armas. */
+  private droneBar(g: Game, compact: boolean): void {
+    const w = compact ? 230 : 300;
+    const top = this.touchLayout && this.w < 640;
+    const x = this.w / 2 - w / 2;
+    const y = top ? 134 : this.h - 52 - (this.touchLayout ? 8 : 16) - 22;
+    const full = g.droneCharge >= 1;
+    const color = "#c08cff";
+    this.bar(x, y, w, 4, g.droneCharge, color);
+    const blink = full && Math.floor(g.time * 3) % 2 === 0;
+    this.text(full ? `DRONE PRONTO${this.touchLayout ? "" : " · B"}` : `DRONE ${Math.floor(g.droneCharge * 100)}%`, x + w, y - 7, 9, blink ? COLORS.white : color, "right", 700);
+  }
+
+  /** Tela do drone: retículo de sensor, alvos quentes marcados, tempo, munição e ogiva. */
+  private droneView(g: Game, cam: THREE.Camera): void {
+    const c = this.ctx;
+    const d = g.drone;
+    const W = this.w;
+    const H = this.h;
+    const green = "rgba(220,255,220,0.9)";
+    // Alvos quentes
+    for (const t of g.ground) {
+      if (!t.alive) continue;
+      const s = this.project(t.position, cam);
+      if (!s.onScreen) continue;
+      c.strokeStyle = d.snapped === t ? COLORS.red : green;
+      c.lineWidth = d.snapped === t ? 2.4 : 1.2;
+      c.strokeRect(s.x - 9, s.y - 9, 18, 18);
+      if (t.type === "aa") this.text("AA", s.x, s.y - 16, 9, green);
+    }
+    for (const e of g.enemies) {
+      if (!e.plane.alive) continue;
+      const s = this.project(e.plane.flight.pos, cam);
+      if (!s.onScreen) continue;
+      c.strokeStyle = d.snapped === e.plane ? COLORS.red : green;
+      c.lineWidth = 1.4;
+      c.beginPath();
+      c.moveTo(s.x, s.y - 10);
+      c.lineTo(s.x + 10, s.y);
+      c.lineTo(s.x, s.y + 10);
+      c.lineTo(s.x - 10, s.y);
+      c.closePath();
+      c.stroke();
+    }
+    // Retículo central
+    const cx = W / 2;
+    const cy = H / 2;
+    c.strokeStyle = green;
+    c.lineWidth = 1.5;
+    c.beginPath();
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+      c.moveTo(cx + dx * 14, cy + dy * 14);
+      c.lineTo(cx + dx * 60, cy + dy * 60);
+    }
+    c.stroke();
+    const k = 28;
+    c.beginPath();
+    for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]] as const) {
+      c.moveTo(cx + sx * k, cy + sy * (k - 10));
+      c.lineTo(cx + sx * k, cy + sy * k);
+      c.lineTo(cx + sx * (k - 10), cy + sy * k);
+    }
+    c.stroke();
+    // Moldura do sensor
+    const m = 18;
+    c.strokeStyle = "rgba(220,255,220,0.5)";
+    c.beginPath();
+    for (const [x, y, dx, dy] of [[m, m, 1, 1], [W - m, m, -1, 1], [W - m, H - m, -1, -1], [m, H - m, 1, -1]] as const) {
+      c.moveTo(x, y + dy * 40);
+      c.lineTo(x, y);
+      c.lineTo(x + dx * 40, y);
+    }
+    c.stroke();
+
+    const wh = WARHEADS[d.warhead];
+    this.text("MQ-9 · FLIR BRANCO-QUENTE · ZOOM 3×", 30, 34, 11, green, "left", 700);
+    this.text(`LASER ${d.snapped ? "TRAVADO NO ALVO" : "NO SOLO"}`, 30, 52, 11, d.snapped ? COLORS.red : green, "left", 700);
+    const dist = d.position.distanceTo(d.spot.position);
+    this.text(`DIST ${formatDistance(dist)}  ·  ALT ${Math.round(d.position.y)} m`, 30, 70, 10, green, "left", 500);
+    this.text(`${wh.short}  ${d.shots}/${DRONE_SHOTS}`, W - 30, 34, 13, COLORS.white, "right", 700);
+    this.text(d.cooldown > 0 ? "CARREGANDO" : "PRONTO", W - 30, 52, 10, d.cooldown > 0 ? COLORS.amber : green, "right", 700);
+    this.text(this.touchLayout ? "MÍSSIL/CANHÃO dispara · MSL⇄ ogiva · DRONE sai" : "Espaço/Enter dispara · T troca ogiva · B sai", W / 2, H - 30, 11, green, "center", 500);
+    // Tempo restante
+    const bw = Math.min(320, W * 0.5);
+    this.bar(W / 2 - bw / 2, 24, bw, 5, d.remainingFrac, d.timeLeft < 5 ? COLORS.red : "#c08cff");
+    this.text(`${Math.ceil(d.timeLeft)} s`, W / 2, 40, 10, green, "center", 700);
+  }
+
   private ground(g: Game, cam: THREE.Camera): void {
     const c = this.ctx;
     const pp = g.player.flight.pos;
@@ -288,7 +430,7 @@ export class Hud {
       c.lineWidth = 2;
       c.strokeStyle = COLORS.red;
       c.stroke();
-      if (d < 3000) this.bar(s.x - 14, s.y + 12, 28, 3, a.health / 100, COLORS.red, "rgba(60,10,8,0.6)");
+      if (d < 3000) this.bar(s.x - 14, s.y + 12, 28, 3, a.health / a.maxHealth, COLORS.red, "rgba(60,10,8,0.6)");
       this.text(formatDistance(d), s.x, s.y + 23, 11, COLORS.red);
       if (d < 2500) this.text(a.name, s.x, s.y - 17, 10, "rgba(255,170,160,0.9)", "center", 500);
 
@@ -619,7 +761,7 @@ export class Hud {
     const w = compact ? 150 : 220;
     const x = this.w / 2 - w / 2;
     const y = 62;
-    const hp = clamp(p.health / 100, 0, 1);
+    const hp = clamp(p.health / p.maxHealth, 0, 1);
     const color = g.boostActive("shield") ? BOOSTS.shield.color : hp > 0.45 ? COLORS.teal : hp > 0.25 ? COLORS.amber : COLORS.red;
     this.bar(x, y, w, 6, hp, color);
     this.text(`${Math.ceil(p.health)}`, x - 6, y + 3, 11, COLORS.white, "right", 700);
@@ -669,13 +811,13 @@ export class Hud {
       }
       if (!ready) this.bar(ix, ry + 6, 26, 2, 1 - r / msl.reload, COLORS.teal, "rgba(0,0,0,0)");
     });
-    for (let k = 0; k < MAX_FLARES; k++) {
+    for (let k = 0; k < p.maxFlares; k++) {
       c.beginPath();
       c.arc(x + w - 12 - k * 13, ry, 4, 0, TAU);
       c.fillStyle = k < p.flares ? COLORS.amber : "rgba(255,160,67,0.2)";
       c.fill();
     }
-    this.text("FLR", x + w - 14 - MAX_FLARES * 13, ry, 9, "rgba(255,160,67,0.85)", "right");
+    this.text("FLR", x + w - 14 - p.maxFlares * 13, ry, 9, "rgba(255,160,67,0.85)", "right");
     this.text(msl.name.toUpperCase(), x + w / 2, y - 8, 9, TEAL_DIM, "center", 600);
   }
 
@@ -741,6 +883,15 @@ export class Hud {
       const [x, y] = clampRim(toRadar(b.center.x, b.center.z));
       this.text(b.id, x, y, 10, b.captured ? COLORS.blue : COLORS.amber, "center", 700);
     }
+    for (const r of g.rings.rings) {
+      if (!r.active) continue;
+      const [x, y] = toRadar(r.center.x, r.center.z);
+      c.strokeStyle = RING_INFO[r.kind].color;
+      c.lineWidth = 1.2;
+      c.beginPath();
+      c.arc(x, y, 3, 0, TAU);
+      c.stroke();
+    }
     for (const e of g.enemies) {
       if (!e.plane.alive) continue;
       const [x, y] = clampRim(toRadar(e.plane.flight.pos.x, e.plane.flight.pos.z));
@@ -781,7 +932,7 @@ export class Hud {
     if (this.touchLayout && y + h > this.h - 200) return; // não cobre os botões de toque
     this.panel(x, y, w, h);
     const name = t instanceof Aircraft ? t.name : t instanceof GroundTarget ? t.label : "Alvo";
-    const hp = t instanceof Aircraft ? t.health / 100 : t instanceof GroundTarget ? t.health / t.maxHealth : 1;
+    const hp = t instanceof Aircraft ? t.health / t.maxHealth : t instanceof GroundTarget ? t.health / t.maxHealth : 1;
     const d = t.position.distanceTo(p.pos);
     _v.subVectors(t.position, p.pos).normalize();
     const closure = -_v.dot(_acc.subVectors(t.velocity, p.vel)) * 3.6;
@@ -793,14 +944,16 @@ export class Hud {
     this.bar(x + 8, y + 46, w - 16, 5, hp, COLORS.red, "rgba(60,10,8,0.6)");
   }
 
-  private scoreboard(g: Game, compact: boolean): void {
+  /** Retorna o y da última linha desenhada (os objetivos seguem logo abaixo). */
+  private scoreboard(g: Game, compact: boolean): number {
     const x = 16;
     // Toque em retrato: o painel de armas ocupa o topo central; o placar desce para não sobrepor.
     let y = this.touchLayout && this.w < 640 ? 150 : 22;
     this.text(g.score.toLocaleString("pt-BR"), x, y, 22, COLORS.white, "left", 700);
     y += 20;
     const alive = g.enemies.filter((e) => e.plane.alive).length;
-    this.text(`${g.difficulty.label.toUpperCase()} · ONDA ${Math.max(1, g.wave)} · ${alive} hostil${alive === 1 ? "" : "s"}`, x, y, 11, TEAL_DIM, "left");
+    const stage = g.campaign ? `FASE ${g.phaseIndex + 1}` : `ONDA ${Math.max(1, g.wave)}`;
+    this.text(`${g.fighter.name.toUpperCase()} · ${g.difficulty.label.toUpperCase()} · ${stage} · ${alive} hostil${alive === 1 ? "" : "s"}`, x, y, 11, TEAL_DIM, "left");
     y += 16;
     const bases = g.bases.map((b) => `${b.id}${b.captured ? "✓" : ""}`).join("  ");
     this.text(`BASES  ${bases}`, x, y, 11, COLORS.amber, "left");
@@ -819,6 +972,7 @@ export class Hud {
       this.bar(x + 34, y - 3, compact ? 70 : 96, 5, left / b.max, b.color);
       this.text(`${Math.ceil(left)}s`, x + 40 + (compact ? 70 : 96), y, 9, b.color, "left");
     }
+    return y;
   }
 
   private warnings(g: Game): void {

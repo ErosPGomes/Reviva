@@ -12,6 +12,7 @@ export interface InputFrame {
   pause: boolean;
   switchGun: boolean;
   switchMissile: boolean;
+  drone: boolean;
 }
 
 const DEADZONE = 0.12;
@@ -74,7 +75,7 @@ export class Input {
   }
 
   private bindTouch(ui: TouchUI): void {
-    const { zone, base, knob, throttle, throttleFill, gun, missile, flare, camera, pause, gunSwitch, missileSwitch } = ui;
+    const { zone, base, knob, throttle, throttleFill, gun, missile, flare, camera, pause, gunSwitch, missileSwitch, drone } = ui;
     zone.addEventListener("pointerdown", (e) => {
       if (this.stick.id !== -1) return;
       zone.setPointerCapture(e.pointerId);
@@ -148,6 +149,7 @@ export class Input {
     tap(pause, "Touch:pause");
     tap(gunSwitch, "Touch:gunSwitch");
     tap(missileSwitch, "Touch:missileSwitch");
+    tap(drone, "Touch:drone");
   }
 
   private edge(...codes: string[]): boolean {
@@ -200,6 +202,7 @@ export class Input {
       pause: this.edge("Escape", "KeyP", "Touch:pause") || !!padEdge[9],
       switchGun: this.edge("KeyG", "Touch:gunSwitch") || !!padEdge[12],
       switchMissile: this.edge("KeyT", "Tab", "Touch:missileSwitch") || !!padEdge[2],
+      drone: this.edge("KeyB", "Touch:drone") || !!padEdge[13],
     };
     this.edges.clear();
     return frame;
@@ -240,4 +243,5 @@ export interface TouchUI {
   pause: HTMLElement;
   gunSwitch: HTMLElement;
   missileSwitch: HTMLElement;
+  drone: HTMLElement;
 }

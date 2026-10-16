@@ -21,6 +21,7 @@
       <button type="button" id="btn-missile" class="tbtn tbtn--missile">Míssil</button>
       <button type="button" id="btn-flare" class="tbtn tbtn--flare">Flares</button>
       <button type="button" id="btn-missile-switch" class="tbtn tbtn--swap tbtn--swap-missile" aria-label="Trocar míssil">MSL ⇄</button>
+      <button type="button" id="btn-drone" class="tbtn tbtn--drone" aria-label="Chamar drone">DRONE</button>
       <button type="button" id="btn-gun-switch" class="tbtn tbtn--swap tbtn--swap-gun" aria-label="Trocar metralhadora">ARMA ⇄</button>
       <button type="button" id="btn-camera" class="tbtn tbtn--small tbtn--camera" aria-label="Trocar câmera">CAM</button>
       <button type="button" id="btn-pause" class="tbtn tbtn--small tbtn--pause" aria-label="Pausar">II</button>
@@ -43,6 +44,18 @@
           <button type="button" id="start" class="btn btn--primary">Decolar</button>
           <p class="best">Recorde <strong id="best">0</strong></p>
         </div>
+
+        <fieldset class="picker" id="pick-mode">
+          <legend>Modo</legend>
+          <div class="chips" role="radiogroup"></div>
+          <p class="picker__desc" aria-live="polite"></p>
+        </fieldset>
+
+        <fieldset class="picker" id="pick-fighter">
+          <legend>Caça</legend>
+          <div class="chips" role="radiogroup"></div>
+          <p class="picker__desc picker__desc--stats" aria-live="polite"></p>
+        </fieldset>
 
         <fieldset class="picker" id="pick-difficulty">
           <legend>Dificuldade</legend>
@@ -94,7 +107,7 @@
               <kbd>W</kbd><kbd>S</kbd> arfagem · <kbd>A</kbd><kbd>D</kbd> rolagem · <kbd>Q</kbd><kbd>E</kbd> leme ·
               <kbd>R</kbd>/<kbd>Shift</kbd> acelera · <kbd>F</kbd> reduz · <kbd>Espaço</kbd> ou clique: canhão ·
               <kbd>Enter</kbd>, <kbd>M</kbd> ou clique direito: míssil · <kbd>T</kbd> troca míssil · <kbd>G</kbd> troca
-              metralhadora · <kbd>X</kbd> flares · <kbd>C</kbd> câmera ·
+              metralhadora · <kbd>X</kbd> flares · <kbd>B</kbd> drone · <kbd>C</kbd> câmera ·
               <kbd>Esc</kbd> pausa
             </dd>
             <dt>Toque</dt>
@@ -103,6 +116,10 @@
             <dd>Analógico esquerdo voa · direito: leme · RT metralhadora · A míssil · X troca míssil · ↑ troca metralhadora · B flares · LB/RB potência · Y câmera</dd>
             <dt>Míssil</dt>
             <dd>Mantenha o alvo no centro até a caixa fechar e ficar vermelha (TRAVADO). IR trava rápido; Radar alcança 6 km e ignora flares; AGM só trava em solo; Foguetes não travam.</dd>
+            <dt>Drone</dt>
+            <dd>Abates e alvos enchem a barra roxa. Cheia: <kbd>B</kbd> chama o drone com câmera térmica. Mova o retículo, dispare Hellfire guiado a laser (<kbd>T</kbd> troca para a ogiva termobárica). Seu caça fica fora de combate enquanto isso.</dd>
+            <dt>Anéis</dt>
+            <dd>Verde repara, azul dá boost, branco recarrega mísseis e flares, roxo carrega o drone.</dd>
             <dt>Boosts</dt>
             <dd>Cada abate: +velocidade por 10 s e reparo. 2 abates seguidos: recarga rápida. 3 seguidos: munição perfurante. Base neutralizada: blindagem, mísseis e flares recarregados.</dd>
           </dl>
@@ -123,13 +140,13 @@
 
     <section id="over" class="overlay overlay--center" hidden>
       <div class="panel panel--small">
-        <p class="eyebrow eyebrow--red">Fim de missão</p>
+        <p class="eyebrow eyebrow--red" id="over-eyebrow">Fim de missão</p>
         <h2 class="title title--small" id="over-title">Abatido</h2>
         <dl class="stats">
           <div><dt>Pontos</dt><dd id="st-score">0</dd></div>
           <div><dt>Caças</dt><dd id="st-kills">0</dd></div>
           <div><dt>Alvos em solo</dt><dd id="st-ground">0</dd></div>
-          <div><dt>Onda</dt><dd id="st-wave">0</dd></div>
+          <div><dt id="st-wave-label">Onda</dt><dd id="st-wave">0</dd></div>
           <div><dt>Maior sequência</dt><dd id="st-streak">0</dd></div>
           <div><dt>Dificuldade</dt><dd id="st-diff">—</dd></div>
           <div><dt>Tempo de voo</dt><dd id="st-time">0:00</dd></div>

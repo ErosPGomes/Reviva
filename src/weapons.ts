@@ -8,7 +8,7 @@ import { WORLD_HALF } from "./terrain";
 import type { Combatant, Team, Trackable } from "./types";
 
 export interface WeaponEvents {
-  hit(target: Combatant, damage: number, owner: Combatant | null, at: THREE.Vector3): void;
+  hit(target: Combatant, damage: number, owner: Combatant | null, at: THREE.Vector3, kind: "bullet" | "missile"): void;
   splash(at: THREE.Vector3, radius: number, damage: number, team: Team, owner: Combatant | null): void;
   explosion(at: THREE.Vector3, scale: number): void;
 }
@@ -109,7 +109,7 @@ export class BulletSystem {
           if (t.team === b.team || !t.isAlive()) continue;
           const r = t.radius * b.hitScale;
           if (segmentPointDistSq(b.prev, b.pos, t.position) < r * r) {
-            this.events.hit(t, b.damage, b.owner, b.pos);
+            this.events.hit(t, b.damage, b.owner, b.pos, "bullet");
             this.fx.hitSparks(b.pos);
             // Munição explosiva (20 mm): estilhaço atinge quem estiver perto do ponto de impacto.
             if (b.splash > 0) {
@@ -338,7 +338,7 @@ export class MissileSystem {
 
       if (hit || ground || nearFlare || m.age > MISSILE_LIFE) {
         const dmg = m.spec.damage * m.damageMult;
-        if (hit) this.events.hit(hit, dmg, m.owner, m.pos);
+        if (hit) this.events.hit(hit, dmg, m.owner, m.pos, "missile");
         if (hit || ground || nearFlare) {
           this.events.splash(m.pos, m.spec.splash, dmg * 0.5, m.team, m.owner);
           this.events.explosion(m.pos, (ground ? 1.1 : 0.8) * Math.max(0.6, m.spec.splash / 30));

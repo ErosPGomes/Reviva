@@ -11,6 +11,33 @@ Combate aéreo 3D a baixa altitude no navegador. Three.js + TypeScript (strict) 
 - **Controles**: teclado/mouse, toque (manche virtual + trilho de potência + botões) e gamepad, sem configuração.
 - **Mundo**: 18 × 18 km, lavouras em grade com fileiras de plantio no shader, fazendas com silos, cercas vivas, serras na borda.
 
+### Modos
+
+- **Campanha** (5 fases): 1 Primeiro contato (3 caças) → 2 Rota dos anéis (3 anéis + 4 alvos) → 3 Silêncio na base A → 4 Tempestade (bases B e C + 4 caças) → 5 O Ás inimigo (chefe com 320 de vida). Concluir uma fase repara, recarrega e vale +500.
+- **Sobrevivência**: ondas infinitas; as bases são reocupadas 35 s depois de todas caírem.
+
+### Caças
+
+| | Ponto forte | Custo |
+|---|---|---|
+| Falcão | equilibrado | — |
+| Espectro (furtivo) | inimigo trava 80% mais devagar, antiaérea enxerga menos, o mais ágil | 80 de vida, 2 flares |
+| Javali (ataque ao solo) | 170 de vida, blindagem, metralhadora ×2,2 em solo, 3 trilhos por míssil | o mais lento |
+| Relâmpago (interceptador) | 1370 km/h, trava 35% mais longe, recarga 25% mais rápida | curva mais aberta |
+
+### Drone (MQ-9)
+
+A barra roxa enche com abates (+34%), alvos em solo (+12%), bases (+25%) e anéis roxos (+30%). Cheia, **B** chama o drone: 25 s de câmera térmica (FLIR branco-quente) a 2 km de altura, enquanto o caça segue no piloto automático e não pode ser atingido. Retículo gruda em alvos próximos e o laser os acompanha.
+
+- **AGM-114 Hellfire** (padrão): guiagem laser semiativa, 260 de dano, raio de 26 m; corrige a mira até o impacto.
+- **AGM-114N termobárico** (**T** troca): 190 de dano, raio de 75 m, para grupos e bases.
+
+6 disparos por missão. Tomahawk não serve aqui: é míssil de cruzeiro naval para alvos fixos a centenas de km.
+
+### Anéis
+
+7 anéis no ar (raio 42 m): verde repara 35, azul dá boost aleatório, branco recarrega mísseis/flares e esfria a metralhadora, roxo carrega o drone. Reaparecem em outro ponto após 25 s.
+
 ### Dificuldade
 
 | | Recruta | Piloto | Ás |
@@ -59,6 +86,7 @@ A sequência zera após 25 s sem abate. Boosts renovados acumulam até o dobro d
 | Espaço ou clique | canhão |
 | Enter, M ou clique direito | míssil |
 | T / G | trocar míssil / metralhadora |
+| B | drone (quando a barra roxa estiver cheia) |
 | X | flares |
 | C | câmera |
 | Esc | pausa |
@@ -85,6 +113,10 @@ src/
   ai.ts       piloto inimigo bank-to-turn (chão > arena > evasão > ataque)
   weapons.ts  projéteis (teste por segmento), mísseis com antecipação, flares
   particles.ts / effects.ts  billboards instanciados (1 draw call por fila)
+  fighters.ts caças jogáveis (voo, vida, furtividade, trilhos, multiplicadores)
+  campaign.ts fases e objetivos (funções puras, testadas)
+  drone.ts    drone com Hellfire guiado a laser; thermal.ts visão térmica (pós-processo + materiais quentes)
+  rings.ts    anéis de recompensa e teste de travessia
   loadout.ts  tabelas de dificuldade, metralhadoras, mísseis e boosts (balanceamento em um só lugar)
   hud.ts      bússola, fitas de velocidade/altitude, escada de arfagem, painel de armas e alvo, radar
   input.ts, audio.ts (Web Audio sintetizado), game.ts, main.ts

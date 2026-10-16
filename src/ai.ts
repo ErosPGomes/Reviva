@@ -47,7 +47,7 @@ export class AIPilot {
   constructor(
     readonly plane: Aircraft,
     readonly skill: number,
-    private readonly tuning: { gunCone: number; gunRange: number; missileCooldown: number } = { gunCone: 1, gunRange: 1000, missileCooldown: 1 },
+    private readonly tuning: { gunCone: number; gunRange: number; missileCooldown: number; lockMult: number } = { gunCone: 1, gunRange: 1000, missileCooldown: 1, lockMult: 1 },
   ) {}
 
   /** Travamento em andamento: o HUD do jogador mostra aviso a partir de 0,3 s. */
@@ -108,7 +108,8 @@ export class AIPilot {
 
       if (angle < 0.32 && dist > 600 && dist < 3000 && this.missileCooldown <= 0) {
         this.lockTime += dt;
-        if (this.lockTime > 2.7 - this.skill * 0.7) {
+        // lockMult > 1 quando o alvo é furtivo: o radar inimigo demora mais para fechar a trava.
+        if (this.lockTime > (2.7 - this.skill * 0.7) * this.tuning.lockMult) {
           o.fireMissile = true;
           this.lockTime = 0;
           this.missileCooldown = (rand(10, 15) - this.skill * 4) * this.tuning.missileCooldown;

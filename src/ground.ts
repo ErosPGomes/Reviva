@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { BASES } from "./fields";
-import { createAAModel, createFuelModel, createTankModel, setCharred, type GroundModel } from "./models";
+import { createAAModel, createFuelModel, createTankModel, primeMaterials, setCharred, type GroundModel } from "./models";
 import type { Terrain } from "./terrain";
 import type { Combatant } from "./types";
 
@@ -38,6 +38,7 @@ export class GroundTarget implements Combatant {
     this.model = type === "aa" ? createAAModel() : type === "tank" ? createTankModel() : createFuelModel();
     this.model.group.position.copy(pos);
     this.model.group.rotation.y = yaw;
+    primeMaterials(this.model.group);
     // Centro de colisão um pouco acima do chão (meio do veículo).
     this.position = pos.clone().add(new THREE.Vector3(0, 2, 0));
   }

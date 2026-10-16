@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { AIPilot } from "./ai";
-import { Aircraft, MAX_FLARES } from "./aircraft";
+import { Aircraft } from "./aircraft";
 import type { Sfx } from "./audio";
 import { Effects, FX } from "./effects";
 import {
@@ -13,8 +13,15 @@ import {
   stepFlight,
   upOf,
   type FlightControls,
+  type FlightParams,
 } from "./flight";
+import { FIGHTERS, type FighterId, type FighterSpec } from "./fighters";
+import { PHASES, objectiveStatus, phaseComplete, type Counters, type ObjectiveStatus } from "./campaign";
+import { DroneOps, WARHEADS } from "./drone";
+import { RING_INFO, RingSystem } from "./rings";
+import { ThermalView } from "./thermal";
 import { createBases, type Base, type GroundTarget } from "./ground";
+import { setCharred } from "./models";
 import type { Hud } from "./hud";
 import type { InputFrame } from "./input";
 import { clamp, damp, rand, randSigned } from "./math";
@@ -37,7 +44,7 @@ import {
 import { BulletSystem, ENEMY_MISSILE, FlareSystem, MissileSystem, type WeaponEvents } from "./weapons";
 import { buildWorld, type Quality, type World } from "./world";
 
-const BOOSTED_JET = { ...PLAYER_JET, maxSpeed: PLAYER_JET.maxSpeed * BOOST_FX.speedMax, maxThrust: PLAYER_JET.maxThrust * BOOST_FX.speedThrust };
+const boosted = (p: FlightParams): FlightParams => ({ ...p, maxSpeed: p.maxSpeed * BOOST_FX.speedMax, maxThrust: p.maxThrust * BOOST_FX.speedThrust });
 
 export interface Settings {
   arcade: boolean;
@@ -45,11 +52,17 @@ export interface Settings {
   quality: Quality;
   sound: boolean;
   difficulty: Difficulty;
+  mode: GameMode;
+  fighter: FighterId;
   gun: GunId;
   missile: MissileId;
 }
 
+export type GameMode = "campanha" | "sobrevivencia";
+
 export interface GameStats {
+  victory: boolean;
+  phaseReached: number;
   bestStreak: number;
   score: number;
   kills: number;
@@ -63,6 +76,7 @@ export type Phase = "attract" | "playing" | "dying" | "over";
 export interface Enemy {
   readonly plane: Aircraft;
   readonly pilot: AIPilot;
+  readonly boss: boolean;
 }
 
 export interface HudMessage {
@@ -96,8 +110,8 @@ export interface Popup {
   readonly t: number;
 }
 
-const freshRails = (): Record<MissileId, number[]> =>
-  Object.fromEntries(MISSILE_ORDER.map((id) => [id, new Array<number>(MISSILES[id].rails).fill(0)])) as Record<MissileId, number[]>;
+const freshRails = (extra = 0): Record<MissileId, number[]> =>
+  Object.fromEntries(MISSILE_ORDER.map((id) => [id, new Array<number>(MISSILES[id].rails + extra).fill(0)])) as Record<MissileId, number[]>;
 const freshBoosts = (): Record<BoostId, number> =>
   Object.fromEntries(BOOST_ORDER.map((id) => [id, 0])) as Record<BoostId, number>;
 
@@ -155,10 +169,25 @@ export class Game {
   gun: GunId = "cal50";
   missile: MissileId = "ir";
   rails = freshRails();
+  private boostedParams: FlightParams = boosted(PLAYER_JET);
   boosts = freshBoosts();
   streak = 0;
   bestStreak = 0;
   damageIndicators: DamageIndicator[] = [];
+  /* Drone, anéis e campanha */
+  readonly drone: DroneOps;
+  readonly rings: RingSystem;
+  droneCharge = 0;
+  ringsTaken = 0;
+  phaseIndex = 0;
+  victory = false;
+  bossDown = false;
+  phaseBanner = 0; // s restantes do cartão "Fase N"
+  private phaseStart: Counters = { kills: 0, ground: 0, rings: 0, bossDown: false, captured: new Set() };
+  private phaseDoneTimer = -1;
+  private respawnTimer = 0;
+  private readonly thermal = new ThermalView();
+  private readonly prevPos = new THREE.Vector3();
   popups: Popup[] = [];
   private streakTimer = 0;
   onGameOver: (s: GameStats) => void = () => {};
@@ -189,7 +218,11 @@ export class Game {
     this.effects = new Effects(this.scene, this.world.fog);
 
     const events: WeaponEvents = {
-      hit: (t, dmg, owner) => this.damage(t, dmg, owner),
+      hit: (t, dmg, owner, _at, kind) => {
+        // Metralhadora do Javali (estilo GAU-8) é feita para blindados: multiplicador só em alvos de solo.
+        const ground = kind === "bullet" && owner === this.player && t.kind === "ground" ? this.fighter.groundGunMult : 1;
+        this.damage(t, dmg * ground, owner);
+      },
       splash: (at, radius, dmg, team, owner) => {
         for (const t of this.combatants) {
           if (t.team === team || !t.isAlive()) continue;
@@ -208,6 +241,38 @@ export class Game {
     this.ground = this.bases.flatMap((b) => b.targets);
     this.player = this.spawnPlayer();
     this.camQuat.copy(this.player.flight.quat);
+    this.drone = new DroneOps(this.terrain);
+    this.rings = new RingSystem(this.scene, this.terrain);
+  }
+
+  get campaign(): boolean {
+    return this.settings.mode === "campanha";
+  }
+
+  get currentPhase() {
+    return PHASES[Math.min(this.phaseIndex, PHASES.length - 1)]!;
+  }
+
+  private counters(): Counters {
+    return {
+      kills: this.kills,
+      ground: this.groundKills,
+      rings: this.ringsTaken,
+      bossDown: this.bossDown,
+      captured: new Set(this.bases.filter((b) => b.captured).map((b) => b.id)),
+    };
+  }
+
+  objectives(): ObjectiveStatus[] {
+    const now = this.counters();
+    return this.currentPhase.objectives.map((o) => objectiveStatus(o, now, this.phaseStart));
+  }
+
+  private addCharge(amount: number): void {
+    if (this.drone.active) return;
+    const was = this.droneCharge >= 1;
+    this.droneCharge = Math.min(1, this.droneCharge + amount);
+    if (!was && this.droneCharge >= 1) this.message("Drone pronto · aperte B (ou DRONE)", "#c08cff", true);
   }
 
   applyQuality(): void {
@@ -225,7 +290,10 @@ export class Game {
   private spawnPlayer(): Aircraft {
     const pos = PLAYER_START.clone();
     pos.y = this.terrain.heightAt(pos.x, pos.z) + 320;
-    const p = new Aircraft("blue", "Você", PLAYER_JET, pos, 0, 210);
+    const f = this.fighter;
+    const p = new Aircraft("blue", "Você", f.flight, pos, 0, 210, f.id);
+    p.health = p.maxHealth = f.health;
+    p.flares = p.maxFlares = f.flares;
     p.addTo(this.scene);
     return p;
   }
@@ -259,12 +327,28 @@ export class Game {
     this.damageFlash = this.hitMarker = this.killMarker = 0;
     this.gun = this.settings.gun;
     this.missile = this.settings.missile;
-    this.rails = freshRails();
+    this.rails = freshRails(this.fighter.extraRails);
     this.boosts = freshBoosts();
+    this.boostedParams = boosted(this.fighter.flight);
     this.streak = this.bestStreak = this.streakTimer = 0;
     this.damageIndicators = [];
     this.popups = [];
+    this.endDrone();
+    this.droneCharge = 0;
+    this.ringsTaken = 0;
+    this.victory = false;
+    this.bossDown = false;
+    this.phaseIndex = 0;
+    this.phaseDoneTimer = -1;
+    this.respawnTimer = 3;
+    this.rings.reset();
+    this.prevPos.copy(this.player.flight.pos);
     this.phase = "playing";
+    if (this.campaign) {
+      this.pendingWave = false;
+      this.startPhase(0);
+      return;
+    }
     this.message("Neutralize as bases A, B e C", COLORS.teal, true);
   }
 
@@ -288,7 +372,20 @@ export class Game {
   }
 
   stats(): GameStats {
-    return { score: this.score, kills: this.kills, groundKills: this.groundKills, wave: this.wave, time: this.flightTime, bestStreak: this.bestStreak };
+    return {
+      score: this.score,
+      kills: this.kills,
+      groundKills: this.groundKills,
+      wave: this.wave,
+      time: this.flightTime,
+      bestStreak: this.bestStreak,
+      victory: this.victory,
+      phaseReached: this.phaseIndex + 1,
+    };
+  }
+
+  get fighter(): FighterSpec {
+    return FIGHTERS[this.settings.fighter];
   }
 
   get difficulty() {
@@ -320,7 +417,12 @@ export class Game {
     const p = this.player;
 
     if (this.phase === "attract") this.autopilot(dt);
-    else if (this.phase === "playing" && p.alive && inp) this.flyPlayer(dt, inp);
+    else if (this.phase === "playing" && p.alive && inp) {
+      if (this.drone.active) this.flyDrone(dt, inp);
+      else this.flyPlayer(dt, inp);
+    }
+    if (this.phase === "playing" && p.alive) this.checkRings(dt);
+    this.prevPos.copy(p.flight.pos);
 
     this.updateEnemies(dt);
     this.updateGround(dt);
@@ -367,7 +469,16 @@ export class Game {
 
   render(): void {
     this.world.update(this.camera);
-    this.renderer.render(this.scene, this.camera);
+    if (this.drone.active) {
+      // Visão térmica: motores e veículos vivos "quentes", destroços mornos, céu frio.
+      for (const e of this.enemies) if (!e.plane.removed) this.thermal.heat(e.plane.mesh.group, !e.plane.alive);
+      for (const t of this.ground) this.thermal.heat(t.model.group, !t.alive);
+      for (const m of this.missiles.active) this.thermal.heat(m.mesh);
+      this.thermal.heat(this.player.mesh.group);
+      this.thermal.render(this.renderer, this.scene, this.camera, this.time, [...this.world.coldObjects, ...this.rings.rings.map((r) => r.mesh)]);
+    } else {
+      this.renderer.render(this.scene, this.camera);
+    }
     this.hud.draw(this);
   }
 
@@ -378,15 +489,16 @@ export class Game {
 
   /* ---------------- Jogador ---------------- */
 
-  private autopilot(dt: number): void {
+  private autopilot(dt: number, holdAlt = 300): void {
     const f = this.player.flight;
     const alt = f.pos.y - this.terrain.heightAt(f.pos.x, f.pos.z);
+    const target = clamp(holdAlt, 250, 1500);
     this.controls.roll = arcadeRoll(f.quat, 0.3);
-    this.controls.pitch = clamp((300 - alt) * 0.004 - f.vel.y * 0.03, -0.4, 0.5);
+    this.controls.pitch = clamp((target - alt) * 0.004 - f.vel.y * 0.03, -0.4, 0.5);
     this.controls.yaw = 0;
     this.controls.throttle = 0.7;
     this.controls.assist = true;
-    stepFlight(f, this.controls, dt, PLAYER_JET);
+    stepFlight(f, this.controls, dt, this.player.params);
   }
 
   private flyPlayer(dt: number, inp: InputFrame): void {
@@ -415,10 +527,11 @@ export class Game {
     }
 
     // Boost de velocidade: parâmetros de voo temporários (teto e empuxo maiores), sem mutar a constante.
-    stepFlight(p.flight, c, dt, this.boostActive("speed") ? BOOSTED_JET : p.params);
+    stepFlight(p.flight, c, dt, this.boostActive("speed") ? this.boostedParams : p.params);
     this.flightTime += dt;
 
     if (inp.camera) this.cameraMode = this.cameraMode === "chase" ? "cockpit" : "chase";
+    if (inp.drone) this.startDrone();
     if (inp.switchGun) this.cycleGun();
     if (inp.switchMissile) this.cycleMissile();
 
@@ -461,10 +574,10 @@ export class Game {
     }
 
     const diff = this.difficulty;
-    if (p.lastHitAt < this.time - diff.regenDelay) p.health = Math.min(100, p.health + diff.regenRate * dt);
+    if (p.lastHitAt < this.time - diff.regenDelay) p.heal(diff.regenRate * dt);
 
     // Trilhos de todos os tipos recarregam em paralelo (trocar de míssil não perde recarga).
-    const reloadRate = this.boostActive("reload") ? BOOST_FX.reloadRate : 1;
+    const reloadRate = (this.boostActive("reload") ? BOOST_FX.reloadRate : 1) * this.fighter.reloadMult;
     for (const id of MISSILE_ORDER) {
       const r = this.rails[id];
       for (let k = 0; k < r.length; k++) r[k] = Math.max(0, r[k]! - dt * reloadRate);
@@ -490,6 +603,91 @@ export class Game {
       this.outTimer += dt;
       if (this.outTimer > OUT_LIMIT) this.killAircraft(p, null);
     } else this.outTimer = 0;
+  }
+
+  /* ---------------- Drone ---------------- */
+
+  private startDrone(): void {
+    if (this.droneCharge < 1 || this.drone.active) {
+      if (!this.drone.active) this.message(`Drone carregando: ${Math.floor(this.droneCharge * 100)}%`, "#c08cff");
+      return;
+    }
+    // Centro da órbita: base inimiga ativa mais próxima (até 5 km), senão 1,5 km à frente do avião.
+    const p = this.player.flight;
+    let center: THREE.Vector3 | null = null;
+    let best = 5000;
+    for (const b of this.bases) {
+      if (b.captured) continue;
+      const d = b.center.distanceTo(p.pos);
+      if (d < best) {
+        best = d;
+        center = b.center;
+      }
+    }
+    if (!center) center = forwardOf(p.quat, _v2).setY(0).normalize().multiplyScalar(1500).add(p.pos);
+    this.droneCharge = 0;
+    this.drone.start(center);
+    this.lock.target = null;
+    this.lock.locked = false;
+    this.message("Drone no ar · seu caça segue no piloto automático e fora de alcance", "#c08cff", true);
+  }
+
+  private endDrone(): void {
+    if (!this.drone.active) return;
+    this.drone.stop();
+    this.thermal.restore();
+    for (const t of this.ground) setCharred(t.model.group, !t.alive);
+    this.lastFov = 24;
+  }
+
+  private flyDrone(dt: number, inp: InputFrame): void {
+    // Avião do jogador em órbita automática enquanto ele opera o drone.
+    this.autopilot(dt, this.player.flight.pos.y - this.terrain.heightAt(this.player.flight.pos.x, this.player.flight.pos.z));
+    this.flightTime += dt;
+    const d = this.drone;
+    const targets = this.ground.filter((t) => t.alive) as Combatant[];
+    for (const e of this.enemies) if (e.plane.alive) targets.push(e.plane);
+    d.update(dt, inp.stickX, inp.stickY, this.camera, targets);
+    if (inp.switchMissile) {
+      d.warhead = d.warhead === "hellfire" ? "thermo" : "hellfire";
+      this.message(WARHEADS[d.warhead].name, COLORS.white);
+    }
+    if ((inp.missile || inp.gun) && d.canFire()) {
+      d.consumeShot();
+      _v.subVectors(d.spot.position, d.position).normalize();
+      this.missiles.launch(this.player, "blue", d.position, _v, 120, d.spot, WARHEADS[d.warhead].spec);
+      this.sfx.missile();
+    }
+    const busy = this.missiles.active.some((m) => m.target === d.spot);
+    if (inp.drone || d.timeLeft <= 0 || (d.shots <= 0 && !busy)) this.endDrone();
+  }
+
+  private checkRings(dt: number): void {
+    const ring = this.rings.update(dt, this.time, this.prevPos, this.player.flight.pos);
+    if (!ring) return;
+    const p = this.player;
+    this.ringsTaken++;
+    const info = RING_INFO[ring.kind];
+    switch (ring.kind) {
+      case "health":
+        p.heal(35);
+        break;
+      case "boost":
+        this.grantBoost(BOOST_ORDER[Math.floor(Math.random() * BOOST_ORDER.length)]!);
+        break;
+      case "ammo":
+        for (const id of MISSILE_ORDER) this.rails[id].fill(0);
+        p.flares = p.maxFlares;
+        p.gunHeat = 0;
+        p.overheated = false;
+        break;
+      case "drone":
+        this.addCharge(0.3);
+        break;
+    }
+    this.addScore(50, "anel");
+    this.message(`Anel: ${info.label}`, info.color);
+    this.sfx.hitConfirm();
   }
 
   private cycleGun(): void {
@@ -591,7 +789,7 @@ export class Game {
     if (!a.alive) return;
     a.rails[0] = Math.max(0, a.rails[0] - dt);
     a.rails[1] = Math.max(0, a.rails[1] - dt);
-    if (a.flares < MAX_FLARES) {
+    if (a.flares < a.maxFlares) {
       a.flareRecharge += dt;
       if (a.flareRecharge >= 9) {
         a.flares++;
@@ -624,32 +822,45 @@ export class Game {
     const diff = this.difficulty;
     const count = clamp(1 + this.wave + diff.extraEnemies, 1, 8);
     const skill = clamp(0.3 + this.wave * 0.09 + diff.skillOffset, 0.05, 1);
+    for (let i = 0; i < count; i++) this.spawnEnemy(skill, `${CALLSIGNS[i % CALLSIGNS.length]} ${this.wave}-${i + 1}`, false);
+    this.message(`Onda ${this.wave}: ${count} caça${count > 1 ? "s" : ""} inimigo${count > 1 ? "s" : ""}`, COLORS.amber, true);
+  }
+
+  /** Cria um caça inimigo a 4,5–6 km do jogador, vindo na direção dele. `boss` = Ás com mais vida e habilidade máxima. */
+  private spawnEnemy(skill: number, name: string, boss: boolean): Enemy {
+    const diff = this.difficulty;
     const p = this.player.flight.pos;
     // Agilidade e velocidade do inimigo por dificuldade: no Recruta o jogador sempre vence a curva.
-    const enemyParams = {
+    const agility = boss ? Math.max(1, diff.enemyAgility + 0.15) : diff.enemyAgility;
+    const params = {
       ...ENEMY_JET,
-      pitchRate: ENEMY_JET.pitchRate * diff.enemyAgility,
-      rollRate: ENEMY_JET.rollRate * diff.enemyAgility,
-      maxSpeed: ENEMY_JET.maxSpeed * diff.enemySpeed,
+      pitchRate: ENEMY_JET.pitchRate * agility,
+      rollRate: ENEMY_JET.rollRate * agility,
+      maxSpeed: ENEMY_JET.maxSpeed * diff.enemySpeed * (boss ? 1.05 : 1),
       maxThrust: ENEMY_JET.maxThrust * diff.enemySpeed * diff.enemySpeed,
     };
-    for (let i = 0; i < count; i++) {
-      const a = rand(-1.2, 1.2) + Math.atan2(-p.x, -p.z);
-      const r = rand(4500, 6000);
-      const x = clamp(p.x + Math.sin(a) * r, -ARENA_RADIUS + 1500, ARENA_RADIUS - 1500);
-      const z = clamp(p.z + Math.cos(a) * r, -ARENA_RADIUS + 1500, ARENA_RADIUS - 1500);
-      const pos = new THREE.Vector3(x, this.terrain.heightAt(x, z) + rand(600, 1300), z);
-      const heading = Math.atan2(-(p.x - x), -(p.z - z));
-      const name = `${CALLSIGNS[i % CALLSIGNS.length]} ${this.wave}-${i + 1}`;
-      const plane = new Aircraft("red", name, enemyParams, pos, heading, 230);
-      plane.flares = 2;
-      plane.addTo(this.scene);
-      this.enemies.push({
-        plane,
-        pilot: new AIPilot(plane, skill, { gunCone: diff.enemyGunCone, gunRange: diff.enemyGunRange, missileCooldown: diff.enemyMissileCooldown }),
-      });
-    }
-    this.message(`Onda ${this.wave}: ${count} caça${count > 1 ? "s" : ""} inimigo${count > 1 ? "s" : ""}`, COLORS.amber, true);
+    const a = rand(-1.2, 1.2) + Math.atan2(-p.x, -p.z);
+    const r = rand(4500, 6000);
+    const x = clamp(p.x + Math.sin(a) * r, -ARENA_RADIUS + 1500, ARENA_RADIUS - 1500);
+    const z = clamp(p.z + Math.cos(a) * r, -ARENA_RADIUS + 1500, ARENA_RADIUS - 1500);
+    const pos = new THREE.Vector3(x, this.terrain.heightAt(x, z) + rand(600, 1300), z);
+    const heading = Math.atan2(-(p.x - x), -(p.z - z));
+    const plane = new Aircraft("red", name, params, pos, heading, 230, boss ? "raptor" : "falcao");
+    plane.flares = boss ? 4 : 2;
+    if (boss) plane.health = plane.maxHealth = 320;
+    plane.addTo(this.scene);
+    const enemy: Enemy = {
+      plane,
+      pilot: new AIPilot(plane, boss ? Math.min(1, skill + 0.25) : skill, {
+        gunCone: diff.enemyGunCone,
+        gunRange: diff.enemyGunRange,
+        missileCooldown: diff.enemyMissileCooldown * (boss ? 0.8 : 1),
+        lockMult: this.fighter.stealth,
+      }),
+      boss,
+    };
+    this.enemies.push(enemy);
+    return enemy;
   }
 
   private updateEnemies(dt: number): void {
@@ -657,7 +868,8 @@ export class Game {
     // Ficha de ataque: só os N inimigos mais próximos engajam; os demais esperam em órbita.
     const alive = this.enemies.filter((e) => e.plane.alive);
     alive.sort((a, b) => a.plane.flight.pos.distanceToSquared(target.position) - b.plane.flight.pos.distanceToSquared(target.position));
-    alive.forEach((e, i) => (e.pilot.engage = i < this.difficulty.attackers));
+    const attackers = this.drone.active ? 0 : this.difficulty.attackers;
+    alive.forEach((e, i) => (e.pilot.engage = i < attackers));
     for (const e of this.enemies) {
       const a = e.plane;
       if (!a.alive) continue;
@@ -697,9 +909,10 @@ export class Game {
         }
         continue;
       }
-      if (t.type !== "aa" || !p.alive || this.phase !== "playing") continue;
+      if (t.type !== "aa" || !p.alive || this.phase !== "playing" || this.drone.active) continue;
       const d = t.position.distanceTo(p.flight.pos);
-      if (d > 2600) continue;
+      // Caça furtivo: a antiaérea só detecta mais perto.
+      if (d > 2600 / this.fighter.stealth) continue;
 
       const tof = d / 850;
       _v.copy(p.flight.pos).addScaledVector(p.flight.vel, tof);
@@ -736,8 +949,9 @@ export class Game {
     if (!target.isAlive() || amount <= 0) return;
     const byPlayer = owner === this.player;
     if (target instanceof Aircraft) {
+      if (target === this.player && this.drone.active) return; // operando o drone: caça fora de combate
       if (target === this.player) {
-        amount *= this.difficulty.damageTaken * (this.boostActive("shield") ? BOOST_FX.shield : 1);
+        amount *= this.difficulty.damageTaken * this.fighter.armor * (this.boostActive("shield") ? BOOST_FX.shield : 1);
         if (owner) {
           this.damageIndicators.push({ from: owner.position.clone(), t: this.time });
           if (this.damageIndicators.length > 6) this.damageIndicators.shift();
@@ -768,6 +982,11 @@ export class Game {
 
   private killAircraft(a: Aircraft, owner: Combatant | null): void {
     if (!a.alive) return;
+    if (this.enemies.some((e) => e.boss && e.plane === a)) {
+      this.bossDown = true;
+      if (owner === this.player) this.addScore(1000, "Ás Lâmina");
+      this.message("Ás Lâmina abatido!", COLORS.amber, true);
+    }
     a.alive = false;
     a.health = 0;
     a.wreckSpin = randSigned() * 2.5 || 1;
@@ -777,6 +996,7 @@ export class Game {
     if (this.lock.target === a) this.lock.target = null;
 
     if (a === this.player) {
+      this.endDrone();
       this.phase = "dying";
       this.deathTimer = 4;
       this.deathFocus.copy(a.flight.pos);
@@ -795,7 +1015,8 @@ export class Game {
       this.log(`Você abateu ${a.name}`, true);
       // Recompensas: todo abate dá velocidade e um reparo; sequências liberam recarga e munição perfurante.
       this.grantBoost("speed");
-      this.player.health = Math.min(100, this.player.health + 10);
+      this.addCharge(0.34);
+      this.player.heal(10);
       if (this.streak % 2 === 0) this.grantBoost("reload");
       if (this.streak % 3 === 0) this.grantBoost("damage");
     } else {
@@ -811,7 +1032,8 @@ export class Game {
     if (owner === this.player) {
       this.groundKills++;
       this.addScore(t.score, t.label.toLowerCase());
-      this.player.health = Math.min(100, this.player.health + 4);
+      this.addCharge(0.12);
+      this.player.heal(4);
     }
     const base = t.base;
     if (!base.captured && base.remaining === 0) {
@@ -820,8 +1042,9 @@ export class Game {
       this.message(`Base ${base.id} neutralizada`, COLORS.teal, true);
       // Base caída: blindagem, todos os trilhos recarregados e flares cheios.
       this.grantBoost("shield");
+      this.addCharge(0.25);
       for (const id of MISSILE_ORDER) this.rails[id].fill(0);
-      this.player.flares = MAX_FLARES;
+      this.player.flares = this.player.maxFlares;
       this.log(`Base ${base.id} neutralizada`, true);
       if (this.bases.every((b) => b.captured)) {
         this.rebuildTimer = 35;
@@ -894,7 +1117,7 @@ export class Game {
     const angleTo = (t: Combatant) => _fwd.angleTo(_v.subVectors(t.position, p.flight.pos));
     // Cada míssil define o que trava, até onde e em que cone (radar: longe e estreito; AGM: só solo).
     const canTarget = (t: Combatant) => spec.targets === "any" || spec.targets === t.kind;
-    const range = (t: Combatant) => (t.kind === "ground" ? Math.min(spec.range, 3600) : spec.range);
+    const range = (t: Combatant) => (t.kind === "ground" ? Math.min(spec.range, 3600) : spec.range) * this.fighter.missileRangeMult;
     const inRange = (t: Combatant, slack: number) => t.position.distanceTo(p.flight.pos) < range(t) * slack;
     // Dois cones: aquisição (onde a trava progride) e rastreio, 2,5× maior, onde o sensor segura o alvo.
     // Antes a trava zerava no primeiro quadro fora de um cone de 17°: contra um caça manobrando, nunca fechava.
@@ -944,8 +1167,69 @@ export class Game {
 
   /* ---------------- Regras: ondas, bases, fim ---------------- */
 
+  /* ---------------- Campanha ---------------- */
+
+  private startPhase(i: number): void {
+    this.phaseIndex = i;
+    this.phaseStart = this.counters();
+    this.phaseDoneTimer = -1;
+    this.phaseBanner = 4;
+    this.respawnTimer = 2;
+    const ph = this.currentPhase;
+    // Bases exigidas pela fase começam ocupadas (mesmo se já caíram antes).
+    for (const o of ph.objectives) {
+      if (o.kind !== "bases") continue;
+      for (const b of this.bases) {
+        if (!o.ids.includes(b.id) || !b.captured) continue;
+        b.captured = false;
+        for (const t of b.targets) t.restore();
+      }
+    }
+    this.phaseStart = this.counters();
+    if (ph.boss) this.spawnEnemy(ph.skill + this.difficulty.skillOffset, "Ás Lâmina", true);
+    this.message(`Fase ${i + 1}/${PHASES.length}: ${ph.title}`, COLORS.teal, true);
+    this.message(ph.brief, COLORS.white);
+  }
+
+  private updateCampaign(dt: number): void {
+    const ph = this.currentPhase;
+    this.phaseBanner = Math.max(0, this.phaseBanner - dt);
+    if (this.phaseDoneTimer >= 0) {
+      this.phaseDoneTimer -= dt;
+      if (this.phaseDoneTimer < 0) {
+        if (this.phaseIndex + 1 >= PHASES.length) {
+          this.victory = true;
+          this.phase = "over";
+          this.onGameOver(this.stats());
+        } else this.startPhase(this.phaseIndex + 1);
+      }
+      return;
+    }
+    if (phaseComplete(ph, this.counters(), this.phaseStart)) {
+      this.phaseDoneTimer = 4;
+      this.addScore(500, "fase");
+      this.player.heal(this.player.maxHealth);
+      for (const id of MISSILE_ORDER) this.rails[id].fill(0);
+      this.player.flares = this.player.maxFlares;
+      this.message(this.phaseIndex + 1 >= PHASES.length ? "Campanha concluída!" : `Fase ${this.phaseIndex + 1} concluída`, COLORS.teal, true);
+      return;
+    }
+    // Mantém a pressão da fase: repõe caças comuns até o limite, um por vez.
+    const regular = this.enemies.filter((e) => e.plane.alive && !e.boss).length;
+    if (regular < ph.enemies) {
+      this.respawnTimer -= dt;
+      if (this.respawnTimer <= 0) {
+        this.respawnTimer = 6;
+        this.wave = this.phaseIndex + 1;
+        const n = this.enemies.length + 1;
+        this.spawnEnemy(clamp(ph.skill + this.difficulty.skillOffset, 0.05, 1), `${CALLSIGNS[n % CALLSIGNS.length]} ${this.phaseIndex + 1}-${n}`, false);
+      }
+    }
+  }
+
   private updateRules(dt: number): void {
-    if (this.phase === "playing") {
+    if (this.phase === "playing" && this.campaign) this.updateCampaign(dt);
+    else if (this.phase === "playing") {
       const alive = this.enemies.some((e) => e.plane.alive);
       if (!alive && !this.pendingWave) {
         this.pendingWave = true;
@@ -988,6 +1272,11 @@ export class Game {
     const cam = this.camera;
     const p = this.player;
     const f = p.flight;
+    if (this.drone.active && this.phase === "playing") {
+      this.drone.applyCamera(cam);
+      p.mesh.group.visible = true;
+      return;
+    }
 
     if (this.phase === "dying" || this.phase === "over") {
       this.orbit += dt * 0.3;

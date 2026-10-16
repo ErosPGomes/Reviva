@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { createFlightState, type FlightParams, type FlightState } from "./flight";
-import { createJetMesh, createShadowMesh, type JetMesh } from "./models";
+import { createJetMesh, createShadowMesh, type JetMesh, type JetVariant } from "./models";
 import type { Combatant, Team } from "./types";
 
 export const MAX_FLARES = 3;
@@ -13,6 +13,8 @@ export class Aircraft implements Combatant {
   readonly shadow: THREE.Mesh<THREE.BufferGeometry, THREE.MeshBasicMaterial>;
 
   health = 100;
+  maxHealth = 100;
+  maxFlares = MAX_FLARES;
   alive = true;
   /** Destroços já atingiram o chão e saíram da cena. */
   removed = false;
@@ -38,9 +40,10 @@ export class Aircraft implements Combatant {
     pos: THREE.Vector3,
     heading: number,
     speed: number,
+    variant: JetVariant = "falcao",
   ) {
     this.flight = createFlightState(pos, heading, speed);
-    this.mesh = createJetMesh(team);
+    this.mesh = createJetMesh(team, variant);
     this.shadow = createShadowMesh();
   }
 
@@ -50,6 +53,10 @@ export class Aircraft implements Combatant {
 
   get velocity(): THREE.Vector3 {
     return this.flight.vel;
+  }
+
+  heal(amount: number): void {
+    this.health = Math.min(this.maxHealth, this.health + amount);
   }
 
   isAlive(): boolean {

@@ -13,6 +13,8 @@ export interface World {
   readonly layout: FarmLayout;
   readonly fog: THREE.Fog;
   readonly sunDir: THREE.Vector3;
+  /** Céu e nuvens: escondidos na visão térmica (frios no infravermelho). */
+  readonly coldObjects: readonly THREE.Object3D[];
   update(camera: THREE.Camera): void;
 }
 
@@ -232,7 +234,7 @@ function buildBaseStructures(scene: THREE.Scene, terrain: Terrain): void {
   }
 }
 
-function buildClouds(scene: THREE.Scene, fog: THREE.Fog): void {
+function buildClouds(scene: THREE.Scene, fog: THREE.Fog): THREE.Object3D {
   const puffs = 34 * 8;
   // Nuvens usam neblina mais longa: no horizonte ainda aparecem, como no vídeo.
   const batch = new BillboardBatch(puffs, cloudTexture(), false, new THREE.Fog(fog.color, fog.near * 3, fog.far * 1.4));
@@ -255,6 +257,7 @@ function buildClouds(scene: THREE.Scene, fog: THREE.Fog): void {
   batch.end();
   batch.mesh.renderOrder = 1;
   scene.add(batch.mesh);
+  return batch.mesh;
 }
 
 export function buildWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer, quality: Quality): World {
@@ -285,13 +288,14 @@ export function buildWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer, qu
   buildTrees(scene, terrain, layout, quality);
   buildFarms(scene, terrain, layout);
   buildBaseStructures(scene, terrain);
-  buildClouds(scene, fog);
+  const clouds = buildClouds(scene, fog);
 
   return {
     terrain,
     layout,
     fog,
     sunDir: SUN_DIR,
+    coldObjects: [sky, clouds],
     update(camera) {
       sky.position.copy(camera.position);
     },

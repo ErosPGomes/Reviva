@@ -273,6 +273,12 @@ body {
   outline-offset: 2px;
 }
 
+.picker__desc--stats {
+  white-space: pre-line;
+  line-height: 1.6;
+  font-variant-numeric: tabular-nums;
+}
+
 .picker__desc {
   margin: 0;
   min-height: 1.3em;
@@ -605,6 +611,23 @@ kbd {
 
 .tbtn--swap-gun {
   right: calc(182px + env(safe-area-inset-right, 0px));
+}
+
+.tbtn--drone {
+  width: 72px;
+  height: 44px;
+  border-radius: 0;
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  right: calc(246px + env(safe-area-inset-right, 0px));
+  font-size: 0.62rem;
+  border-color: rgba(192, 140, 255, 0.45);
+  color: rgba(238, 246, 245, 0.5);
+}
+
+.tbtn--drone.is-ready {
+  border-color: #c08cff;
+  background: rgba(192, 140, 255, 0.35);
+  color: var(--ink);
 }
 
 .tbtn--small {

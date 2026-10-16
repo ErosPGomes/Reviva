@@ -5,6 +5,7 @@ import { Sfx } from "./audio";
 import { Game, type GameStats, type Settings } from "./game";
 import { Hud } from "./hud";
 import { Input, type TouchUI } from "./input";
+import { FIGHTERS, FIGHTER_ORDER } from "./fighters";
 import { DIFFICULTIES, GUNS, GUN_ORDER, MISSILES, MISSILE_ORDER, type Difficulty } from "./loadout";
 
 type UiState = "menu" | "playing" | "paused" | "over";
@@ -43,12 +44,16 @@ const settings: Settings = load<Settings>(SETTINGS_KEY, {
   quality: coarse ? "low" : "high",
   sound: true,
   difficulty: "piloto",
+  mode: "campanha",
+  fighter: "falcao",
   gun: "cal50",
   missile: "ir",
 });
 // Valores salvos por versões antigas (ou editados à mão) não podem quebrar as tabelas de armamento.
 if (!(settings.difficulty in DIFFICULTIES)) settings.difficulty = "piloto";
 if (!(settings.gun in GUNS)) settings.gun = "cal50";
+if (!(settings.fighter in FIGHTERS)) settings.fighter = "falcao";
+if (settings.mode !== "campanha" && settings.mode !== "sobrevivencia") settings.mode = "campanha";
 if (!(settings.missile in MISSILES)) settings.missile = "ir";
 let best = load<{ v: number }>(BEST_KEY, { v: 0 }).v;
 
@@ -74,9 +79,11 @@ const touchUi: TouchUI = {
   pause: $("btn-pause"),
   gunSwitch: $("btn-gun-switch"),
   missileSwitch: $("btn-missile-switch"),
+  drone: $("btn-drone"),
 };
 
 let state: UiState = "menu";
+const droneBtn = $("btn-drone");
 const sfx = new Sfx();
 const hud = new Hud($<HTMLCanvasElement>("hud"));
 const input = new Input(touchUi, () => syncTouch());
@@ -137,6 +144,31 @@ function bindPicker<K extends string>(id: string, order: readonly K[], label: (k
 
 const DIFF_ORDER = Object.keys(DIFFICULTIES) as Difficulty[];
 bindPicker("pick-difficulty", DIFF_ORDER, (k) => DIFFICULTIES[k].label, (k) => DIFFICULTIES[k].desc, () => settings.difficulty, (k) => (settings.difficulty = k));
+bindPicker(
+  "pick-mode",
+  ["campanha", "sobrevivencia"] as const,
+  (k) => (k === "campanha" ? "Campanha" : "Sobrevivência"),
+  (k) => (k === "campanha" ? "5 fases com objetivos, termina com o Ás inimigo" : "Ondas infinitas; as bases são reocupadas"),
+  () => settings.mode,
+  (k) => (settings.mode = k),
+);
+bindPicker(
+  "pick-fighter",
+  FIGHTER_ORDER,
+  (k) => FIGHTERS[k].name,
+  (k) => {
+    const f = FIGHTERS[k];
+    const bar = (n: number) => "▮".repeat(n) + "▯".repeat(5 - n);
+    const [spd, agi, arm, gnd] = f.stats;
+    return `${f.role} · ${f.desc}\nVEL ${bar(spd)}  AGI ${bar(agi)}  BLD ${bar(arm)}  SOLO ${bar(gnd)}`;
+  },
+  () => settings.fighter,
+  (k) => {
+    settings.fighter = k;
+    // O voo de demonstração atrás do menu já mostra o caça escolhido.
+    if (state === "menu") game?.attract();
+  },
+);
 bindPicker("pick-gun", GUN_ORDER, (k) => GUNS[k].short, (k) => `${GUNS[k].name} · ${GUNS[k].desc}`, () => settings.gun, (k) => (settings.gun = k));
 bindPicker("pick-missile", MISSILE_ORDER, (k) => MISSILES[k].short, (k) => `${MISSILES[k].name} · ${MISSILES[k].desc}`, () => settings.missile, (k) => (settings.missile = k));
 
@@ -200,8 +232,12 @@ function gameOver(s: GameStats): void {
   $("st-score").textContent = s.score.toLocaleString("pt-BR");
   $("st-kills").textContent = String(s.kills);
   $("st-ground").textContent = String(s.groundKills);
-  $("st-wave").textContent = String(s.wave);
+  $("st-wave-label").textContent = settings.mode === "campanha" ? "Fase" : "Onda";
+  $("st-wave").textContent = String(settings.mode === "campanha" ? s.phaseReached : s.wave);
   $("st-streak").textContent = String(s.bestStreak);
+  $("over-title").textContent = s.victory ? "Missão cumprida" : "Abatido";
+  $("over-eyebrow").textContent = s.victory ? "Campanha concluída" : settings.mode === "campanha" ? `Fase ${s.phaseReached} de 5` : "Fim de missão";
+  $("over-eyebrow").classList.toggle("eyebrow--red", !s.victory);
   $("st-diff").textContent = DIFFICULTIES[settings.difficulty].label;
   const sec = Math.floor(s.time);
   $("st-time").textContent = `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
@@ -245,6 +281,7 @@ function frame(now: number): void {
       game.update(dt, null);
     }
     game.render();
+    droneBtn.classList.toggle("is-ready", game.droneCharge >= 1 || game.drone.active);
   }
 }
 
