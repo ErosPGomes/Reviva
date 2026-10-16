@@ -34,13 +34,21 @@ export class AIPilot {
     deployFlares: false,
   };
   lockTime = 0;
-  private missileCooldown = rand(5, 9);
+  private missileCooldown = rand(8, 12);
   private burst = 0;
   private mode: Mode = "attack";
   private modeTimer = 0;
   private evadeSide = 1;
 
-  constructor(readonly plane: Aircraft, readonly skill: number) {}
+  /** Falso = sem "ficha" de ataque: orbita o jogador a distância e não atira (evita 5 caças colados de uma vez). */
+  engage = true;
+  private orbitPhase = Math.random() * Math.PI * 2;
+
+  constructor(
+    readonly plane: Aircraft,
+    readonly skill: number,
+    private readonly tuning: { gunCone: number; gunRange: number; missileCooldown: number } = { gunCone: 1, gunRange: 1000, missileCooldown: 1 },
+  ) {}
 
   /** Travamento em andamento: o HUD do jogador mostra aviso a partir de 0,3 s. */
   get locking(): boolean {
@@ -71,7 +79,14 @@ export class AIPilot {
     const targetOk = target.alive;
     let throttle = 0.85;
 
-    if (this.mode === "attack" && targetOk) {
+    if (this.mode === "attack" && targetOk && !this.engage) {
+      // Órbita de espera a ~2,8 km do alvo, 300 m acima: presente no radar, mas sem pressão direta.
+      this.orbitPhase += dt * 0.12;
+      _aim.set(Math.cos(this.orbitPhase) * 2800, 300, Math.sin(this.orbitPhase) * 2800).add(target.position);
+      _desired.subVectors(_aim, s.pos).normalize();
+      this.lockTime = 0;
+      throttle = 0.8;
+    } else if (this.mode === "attack" && targetOk) {
       const t = Math.min(dist / 1000, 2.5) * (0.4 + 0.6 * this.skill);
       _aim.copy(target.position).addScaledVector(target.velocity, t);
       _desired.subVectors(_aim, s.pos).normalize();
@@ -83,10 +98,12 @@ export class AIPilot {
       throttle = dist > 1600 ? 1 : dist < 600 && ahead > 0.7 ? 0.55 : 0.85;
 
       const angle = Math.acos(clamp(ahead, -1, 1));
-      const gunCone = 0.035 + (1 - this.skill) * 0.03;
-      if (angle < gunCone && dist < 1000) {
+      const gunCone = (0.03 + this.skill * 0.02) * this.tuning.gunCone;
+      if (angle < gunCone && dist < this.tuning.gunRange) {
         this.burst += dt;
-        o.fireGun = this.burst % 1.4 < 0.8;
+        // Rajadas curtas com pausa: menos habilidade = pausas maiores (janela para o jogador escapar).
+        const cycle = 1.4 + (1 - this.skill) * 1.2;
+        o.fireGun = this.burst % cycle < 0.7;
       } else this.burst = 0;
 
       if (angle < 0.32 && dist > 600 && dist < 3000 && this.missileCooldown <= 0) {
@@ -94,7 +111,7 @@ export class AIPilot {
         if (this.lockTime > 2.7 - this.skill * 0.7) {
           o.fireMissile = true;
           this.lockTime = 0;
-          this.missileCooldown = rand(10, 15) - this.skill * 4;
+          this.missileCooldown = (rand(10, 15) - this.skill * 4) * this.tuning.missileCooldown;
         }
       } else this.lockTime = Math.max(0, this.lockTime - dt * 2);
     } else if (this.mode === "extend" || !targetOk) {

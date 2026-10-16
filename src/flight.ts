@@ -23,11 +23,11 @@ export const PLAYER_JET: FlightParams = {
   maxSpeed: 310,
   minSpeed: 75,
   maxThrust: 34,
-  pitchRate: 1.35,
-  rollRate: 3.2,
+  pitchRate: 1.65,
+  rollRate: 3.8,
   yawRate: 0.35,
   grip: 3.5,
-  assistTurn: 0.55,
+  assistTurn: 0.8,
 };
 
 export const ENEMY_JET: FlightParams = {
@@ -103,7 +103,7 @@ export function stepFlight(s: FlightState, c: FlightControls, dt: number, p: Fli
 
   // Superfícies de controle perdem efeito em baixa velocidade; em alta, limite de G reduz a arfagem.
   const auth = clamp((s.speed - 25) / (p.minSpeed + 10), 0.2, 1);
-  const gLimit = 1 - 0.35 * clamp((s.speed - 0.65 * p.maxSpeed) / (0.35 * p.maxSpeed), 0, 1);
+  const gLimit = 1 - 0.2 * clamp((s.speed - 0.65 * p.maxSpeed) / (0.35 * p.maxSpeed), 0, 1);
 
   _q.setFromAxisAngle(AX, c.pitch * p.pitchRate * auth * gLimit * dt);
   s.quat.multiply(_q);

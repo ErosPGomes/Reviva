@@ -833,7 +833,8 @@ export class Hud {
     } else if (g.threat.locking) {
       this.text("INIMIGO TRAVANDO EM VOCÊ", this.w / 2, y, 14, COLORS.amber, "center", 700);
     }
-    if (g.pullUp && blink) this.text("PUXE PARA CIMA", this.w / 2, y + 24, 16, COLORS.red, "center", 700);
+    if (g.gcas) this.text("AUTO-GCAS · RECUPERANDO", this.w / 2, y + 24, 16, COLORS.amber, "center", 700);
+    else if (g.pullUp && blink) this.text("PUXE PARA CIMA", this.w / 2, y + 24, 16, COLORS.red, "center", 700);
     if (g.outTimer > 0) {
       this.text(`VOLTE À ÁREA DE COMBATE  ${Math.ceil(10 - g.outTimer)}`, this.w / 2, y + 48, 15, COLORS.red, "center", 700);
     }

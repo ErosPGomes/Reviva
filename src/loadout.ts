@@ -21,6 +21,18 @@ export interface DifficultySpec {
   readonly regenRate: number; // HP/s
   readonly extraEnemies: number;
   readonly scoreMult: number;
+  /* Sensação de combate (o que decide se dá para vencer, não só quanto dano se leva) */
+  readonly enemyAgility: number; // × taxas de arfagem/rolagem do caça inimigo
+  readonly enemySpeed: number; // × velocidade máxima do inimigo
+  readonly attackers: number; // quantos inimigos atacam ao mesmo tempo; os demais orbitam à distância
+  readonly enemyGunCone: number; // × cone em que a IA aceita atirar
+  readonly enemyGunRange: number; // m
+  readonly enemyMissileCooldown: number; // × intervalo entre mísseis inimigos
+  readonly aimAssist: number; // 0..1: quanto a rajada do jogador é puxada para o ponto de antecipação
+  readonly aimAssistCone: number; // rad em que a assistência atua
+  readonly hitScale: number; // × raio de acerto das balas do jogador
+  readonly lockMult: number; // × tempo de trava dos mísseis do jogador
+  readonly autoGcas: boolean; // recuperação automática antes de colidir com o terreno
 }
 
 export const DIFFICULTIES: Record<Difficulty, DifficultySpec> = {
@@ -36,6 +48,17 @@ export const DIFFICULTIES: Record<Difficulty, DifficultySpec> = {
     regenRate: 8,
     extraEnemies: -1,
     scoreMult: 0.75,
+    enemyAgility: 0.7,
+    enemySpeed: 0.88,
+    attackers: 1,
+    enemyGunCone: 0.55,
+    enemyGunRange: 650,
+    enemyMissileCooldown: 2,
+    aimAssist: 0.85,
+    aimAssistCone: 0.14,
+    hitScale: 1.6,
+    lockMult: 0.55,
+    autoGcas: true,
   },
   piloto: {
     label: "Piloto",
@@ -49,6 +72,17 @@ export const DIFFICULTIES: Record<Difficulty, DifficultySpec> = {
     regenRate: 5,
     extraEnemies: 0,
     scoreMult: 1,
+    enemyAgility: 0.85,
+    enemySpeed: 0.95,
+    attackers: 2,
+    enemyGunCone: 0.8,
+    enemyGunRange: 850,
+    enemyMissileCooldown: 1.3,
+    aimAssist: 0.55,
+    aimAssistCone: 0.09,
+    hitScale: 1.3,
+    lockMult: 0.75,
+    autoGcas: true,
   },
   as: {
     label: "Ás",
@@ -62,6 +96,17 @@ export const DIFFICULTIES: Record<Difficulty, DifficultySpec> = {
     regenRate: 3,
     extraEnemies: 1,
     scoreMult: 1.5,
+    enemyAgility: 1.05,
+    enemySpeed: 1.02,
+    attackers: 99,
+    enemyGunCone: 1,
+    enemyGunRange: 1000,
+    enemyMissileCooldown: 0.9,
+    aimAssist: 0.2,
+    aimAssistCone: 0.05,
+    hitScale: 1.1,
+    lockMult: 1,
+    autoGcas: false,
   },
 };
 

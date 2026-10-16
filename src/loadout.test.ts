@@ -11,7 +11,25 @@ describe("dificuldade", () => {
       expect(normal[k]).toBeLessThan(hard[k]);
     }
     expect(easy.regenRate).toBeGreaterThan(hard.regenRate);
+    for (const k of ["enemyAgility", "enemySpeed", "attackers", "enemyGunCone", "enemyGunRange", "lockMult"] as const) {
+      expect(easy[k]).toBeLessThan(normal[k]);
+      expect(normal[k]).toBeLessThan(hard[k]);
+    }
+    for (const k of ["aimAssist", "aimAssistCone", "hitScale", "enemyMissileCooldown"] as const) {
+      expect(easy[k]).toBeGreaterThan(normal[k]);
+      expect(normal[k]).toBeGreaterThan(hard[k]);
+    }
     expect(easy.aaCooldown).toBeGreaterThan(hard.aaCooldown);
+  });
+});
+
+describe("vantagem do jogador", () => {
+  it("no Recruta e no Piloto o jogador curva mais que o inimigo", async () => {
+    const { PLAYER_JET, ENEMY_JET } = await import("./flight");
+    for (const d of [DIFFICULTIES.recruta, DIFFICULTIES.piloto]) {
+      expect(PLAYER_JET.pitchRate).toBeGreaterThan(ENEMY_JET.pitchRate * d.enemyAgility * 1.4);
+      expect(PLAYER_JET.maxSpeed).toBeGreaterThan(ENEMY_JET.maxSpeed * d.enemySpeed);
+    }
   });
 });
 

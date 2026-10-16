@@ -29,6 +29,7 @@ class Bullet {
   damage = 0;
   airburst = false;
   splash = 0;
+  hitScale = 1;
 }
 
 const BULLET_GRAVITY = 4.9; // meia gravidade: queda perceptível sem exigir compensação manual
@@ -74,6 +75,7 @@ export class BulletSystem {
     color: number,
     airburst: boolean,
     splash = 0,
+    hitScale = 1,
   ): void {
     if (this.live >= this.pool.length) return;
     const b = this.pool[this.live++]!;
@@ -87,6 +89,7 @@ export class BulletSystem {
     b.damage = damage;
     b.airburst = airburst;
     b.splash = splash;
+    b.hitScale = hitScale;
     b.color.setHex(color);
   }
 
@@ -104,7 +107,8 @@ export class BulletSystem {
       if (!dead) {
         for (const t of targets) {
           if (t.team === b.team || !t.isAlive()) continue;
-          if (segmentPointDistSq(b.prev, b.pos, t.position) < t.radius * t.radius) {
+          const r = t.radius * b.hitScale;
+          if (segmentPointDistSq(b.prev, b.pos, t.position) < r * r) {
             this.events.hit(t, b.damage, b.owner, b.pos);
             this.fx.hitSparks(b.pos);
             // Munição explosiva (20 mm): estilhaço atinge quem estiver perto do ponto de impacto.

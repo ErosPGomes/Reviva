@@ -83,6 +83,7 @@ export const COLORS = { teal: "#5fe3cf", amber: "#ffa043", red: "#ff5146", white
 const CALLSIGNS = ["Víbora", "Corvo", "Lobo", "Chacal", "Cobra", "Abutre", "Escorpião"];
 const PLAYER_START = new THREE.Vector3(0, 0, 4300);
 const OUT_LIMIT = 10;
+const LOCK_GRACE = 0.8; // s que o sensor tolera o alvo fora do cone de rastreio
 
 export interface DamageIndicator {
   readonly from: THREE.Vector3;
@@ -107,6 +108,8 @@ const _right = new THREE.Vector3();
 const _up = new THREE.Vector3();
 const _tilt = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -0.1);
 const _offset = new THREE.Vector3();
+const _assist = new THREE.Vector3();
+const _assistBest = new THREE.Vector3();
 
 export class Game {
   readonly renderer: THREE.WebGLRenderer;
@@ -134,16 +137,18 @@ export class Game {
   flightTime = 0;
   outTimer = 0;
   pullUp = false;
+  /** Auto-GCAS assumiu o controle neste quadro (HUD avisa). */
+  gcas = false;
   hitMarker = 0;
   killMarker = 0;
   damageFlash = 0;
-  readonly lock = { target: null as Combatant | null, time: 0, locked: false };
+  readonly lock = { target: null as Combatant | null, time: 0, locked: false, grace: 0 };
   readonly threat = { missiles: 0, nearest: Infinity, from: null as THREE.Vector3 | null, locking: false };
   messages: HudMessage[] = [];
   feed: FeedLine[] = [];
   /** Tempo necessário para travar com o míssil selecionado (o HUD desenha o progresso). */
   get lockTimeNeeded(): number {
-    return MISSILES[this.missile].lockTime;
+    return MISSILES[this.missile].lockTime * this.difficulty.lockMult;
   }
 
   /* Armamento e boosts do jogador */
@@ -392,6 +397,23 @@ export class Game {
     c.pitch = inp.stickY;
     c.yaw = inp.yaw;
     c.throttle = inp.throttle;
+    // Auto-GCAS (como no F-16 real): se o vetor velocidade cruza o terreno em ~2,5 s, nivela as asas e puxa.
+    // O jogador perde o controle só durante a recuperação; evita a morte mais frustrante (bater no chão).
+    this.gcas = false;
+    if (this.difficulty.autoGcas && p.flight.vel.y < -5) {
+      const f = p.flight;
+      const t = 2.5;
+      _v.copy(f.pos).addScaledVector(f.vel, t);
+      const clearance = Math.min(_v.y - this.terrain.heightAt(_v.x, _v.z), f.pos.y - this.terrain.heightAt(f.pos.x, f.pos.z) + f.vel.y * 1.2);
+      if (clearance < 35) {
+        this.gcas = true;
+        c.roll = arcadeRoll(f.quat, 0);
+        c.pitch = Math.abs(bankAngle(f.quat)) < 0.6 ? 1 : 0.2;
+        c.throttle = 1;
+        c.assist = true;
+      }
+    }
+
     // Boost de velocidade: parâmetros de voo temporários (teto e empuxo maiores), sem mutar a constante.
     stepFlight(p.flight, c, dt, this.boostActive("speed") ? BOOSTED_JET : p.params);
     this.flightTime += dt;
@@ -408,8 +430,9 @@ export class Game {
     const firing = inp.gun && !p.overheated;
     if (firing) {
       let shots = 0;
+      const assist = this.aimAssistDir(gun.speed);
       while (p.gunCooldown <= 0 && shots < 4) {
-        this.fireGun(p, gun.damage * dmgMult, gun.spread, gun.color, gun.speed, gun.life, gun.splash);
+        this.fireGun(p, gun.damage * dmgMult, gun.spread, gun.color, gun.speed, gun.life, gun.splash, assist, this.difficulty.hitScale);
         p.gunCooldown += gun.interval;
         p.gunHeat += gun.heat * heatMult;
         shots++;
@@ -483,14 +506,46 @@ export class Game {
     this.message(MISSILES[this.missile].name, COLORS.white);
   }
 
-  private fireGun(a: Aircraft, damage: number, spread: number, color: number, speed = 1100, life = 1.8, splash = 0): void {
+  /**
+   * Assistência de mira: se o ponto de antecipação de algum inimigo estiver a poucos graus do nariz,
+   * devolve a direção que acerta (a rajada é puxada para lá na proporção `aimAssist`). Retorna null fora do cone.
+   */
+  private aimAssistDir(muzzleSpeed: number): THREE.Vector3 | null {
+    const diff = this.difficulty;
+    if (diff.aimAssist <= 0) return null;
+    const p = this.player.flight;
+    forwardOf(p.quat, _fwd);
+    let best: THREE.Vector3 | null = null;
+    let bestAng = diff.aimAssistCone;
+    for (const t of this.combatants) {
+      if (t.team === "blue" || !t.isAlive()) continue;
+      const d = t.position.distanceTo(p.pos);
+      if (d > 1800) continue;
+      let tof = d / muzzleSpeed;
+      for (let k = 0; k < 2; k++) {
+        _assist.copy(t.position).addScaledVector(t.velocity, tof).addScaledVector(p.vel, -tof);
+        tof = _assist.distanceTo(p.pos) / muzzleSpeed;
+      }
+      _assist.y += 0.5 * 4.9 * tof * tof;
+      _assist.sub(p.pos).normalize();
+      const ang = _fwd.angleTo(_assist);
+      if (ang < bestAng) {
+        bestAng = ang;
+        best = _assistBest.copy(_assist);
+      }
+    }
+    if (!best) return null;
+    return best.lerp(_fwd, 1 - diff.aimAssist).normalize();
+  }
+
+  private fireGun(a: Aircraft, damage: number, spread: number, color: number, speed = 1100, life = 1.8, splash = 0, aim: THREE.Vector3 | null = null, hitScale = 1): void {
     const q = a.flight.quat;
     forwardOf(q, _fwd);
     rightOf(q, _right);
     upOf(q, _up);
     a.gunSide = -a.gunSide;
     _v.copy(a.flight.pos).addScaledVector(_fwd, 8.5).addScaledVector(_right, a.gunSide * 0.9).addScaledVector(_up, 0.2);
-    this.bullets.fire(a, a.team, _v, _fwd, speed, a.flight.vel, damage, spread, life, color, false, splash);
+    this.bullets.fire(a, a.team, _v, aim ?? _fwd, speed, a.flight.vel, damage, spread, life, color, false, splash, hitScale);
     this.effects.glow.emit(FX.muzzle, _v.x, _v.y, _v.z, a.flight.vel.x, a.flight.vel.y, a.flight.vel.z);
     this.sfx.gun(a === this.player ? 0 : a.flight.pos.distanceTo(this.camera.position));
   }
@@ -570,6 +625,14 @@ export class Game {
     const count = clamp(1 + this.wave + diff.extraEnemies, 1, 8);
     const skill = clamp(0.3 + this.wave * 0.09 + diff.skillOffset, 0.05, 1);
     const p = this.player.flight.pos;
+    // Agilidade e velocidade do inimigo por dificuldade: no Recruta o jogador sempre vence a curva.
+    const enemyParams = {
+      ...ENEMY_JET,
+      pitchRate: ENEMY_JET.pitchRate * diff.enemyAgility,
+      rollRate: ENEMY_JET.rollRate * diff.enemyAgility,
+      maxSpeed: ENEMY_JET.maxSpeed * diff.enemySpeed,
+      maxThrust: ENEMY_JET.maxThrust * diff.enemySpeed * diff.enemySpeed,
+    };
     for (let i = 0; i < count; i++) {
       const a = rand(-1.2, 1.2) + Math.atan2(-p.x, -p.z);
       const r = rand(4500, 6000);
@@ -578,16 +641,23 @@ export class Game {
       const pos = new THREE.Vector3(x, this.terrain.heightAt(x, z) + rand(600, 1300), z);
       const heading = Math.atan2(-(p.x - x), -(p.z - z));
       const name = `${CALLSIGNS[i % CALLSIGNS.length]} ${this.wave}-${i + 1}`;
-      const plane = new Aircraft("red", name, ENEMY_JET, pos, heading, 230);
+      const plane = new Aircraft("red", name, enemyParams, pos, heading, 230);
       plane.flares = 2;
       plane.addTo(this.scene);
-      this.enemies.push({ plane, pilot: new AIPilot(plane, skill) });
+      this.enemies.push({
+        plane,
+        pilot: new AIPilot(plane, skill, { gunCone: diff.enemyGunCone, gunRange: diff.enemyGunRange, missileCooldown: diff.enemyMissileCooldown }),
+      });
     }
     this.message(`Onda ${this.wave}: ${count} caça${count > 1 ? "s" : ""} inimigo${count > 1 ? "s" : ""}`, COLORS.amber, true);
   }
 
   private updateEnemies(dt: number): void {
     const target = this.player;
+    // Ficha de ataque: só os N inimigos mais próximos engajam; os demais esperam em órbita.
+    const alive = this.enemies.filter((e) => e.plane.alive);
+    alive.sort((a, b) => a.plane.flight.pos.distanceToSquared(target.position) - b.plane.flight.pos.distanceToSquared(target.position));
+    alive.forEach((e, i) => (e.pilot.engage = i < this.difficulty.attackers));
     for (const e of this.enemies) {
       const a = e.plane;
       if (!a.alive) continue;
@@ -825,27 +895,43 @@ export class Game {
     // Cada míssil define o que trava, até onde e em que cone (radar: longe e estreito; AGM: só solo).
     const canTarget = (t: Combatant) => spec.targets === "any" || spec.targets === t.kind;
     const range = (t: Combatant) => (t.kind === "ground" ? Math.min(spec.range, 3600) : spec.range);
-    const valid = (t: Combatant, slack: number) =>
-      t.isAlive() && canTarget(t) && t.position.distanceTo(p.flight.pos) < range(t) && angleTo(t) < spec.cone * slack;
+    const inRange = (t: Combatant, slack: number) => t.position.distanceTo(p.flight.pos) < range(t) * slack;
+    // Dois cones: aquisição (onde a trava progride) e rastreio, 2,5× maior, onde o sensor segura o alvo.
+    // Antes a trava zerava no primeiro quadro fora de um cone de 17°: contra um caça manobrando, nunca fechava.
+    const acquire = spec.cone * 1.5;
+    const track = spec.cone * 2.5;
 
-    // Alvo atual tem histerese (cone 40% maior) para a trava não pular entre alvos próximos.
-    if (l.target && valid(l.target, 1.4)) {
-      l.time += dt;
+    if (l.target && l.target.isAlive() && canTarget(l.target) && inRange(l.target, 1.15) && angleTo(l.target) < track) {
+      l.grace = LOCK_GRACE;
+      if (angleTo(l.target) < acquire || l.locked) l.time = Math.min(l.time + dt, this.lockTimeNeeded);
+    } else if (l.target && l.grace > 0) {
+      // Alvo saiu do sensor: breve tolerância, progresso escorre em vez de zerar.
+      l.grace -= dt;
+      l.time = Math.max(0, l.time - dt * 1.5);
+      if (l.time < this.lockTimeNeeded) l.locked = false;
     } else {
       let best: Combatant | null = null;
-      let bestAng = Infinity;
+      let bestScore = Infinity;
       for (const t of this.combatants) {
-        if (t.team === p.team || !valid(t, 1)) continue;
+        if (t.team === p.team || !t.isAlive() || !canTarget(t) || !inRange(t, 1)) continue;
         const a = angleTo(t);
-        if (a < bestAng) {
-          bestAng = a;
+        if (a > acquire) continue;
+        // Ângulo domina; distância desempata (prefere o mais perto quando dois estão alinhados).
+        const score = a + (t.position.distanceTo(p.flight.pos) / range(t)) * 0.15;
+        if (score < bestScore) {
+          bestScore = score;
           best = t;
         }
       }
+      if (best !== l.target) l.time = 0;
       l.target = best;
-      l.time = 0;
+      l.grace = LOCK_GRACE;
+      l.locked = false;
     }
-    l.locked = !!l.target && l.time >= spec.lockTime;
+    if (l.target && l.time >= this.lockTimeNeeded) {
+      if (!l.locked) this.sfx.hitConfirm();
+      l.locked = true;
+    }
   }
 
   private updateThreat(): void {
