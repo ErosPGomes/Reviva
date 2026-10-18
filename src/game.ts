@@ -9,6 +9,7 @@ import {
   arcadeRoll,
   bankAngle,
   forwardOf,
+  pitchAngle,
   rightOf,
   stepFlight,
   upOf,
@@ -43,6 +44,12 @@ import {
 } from "./loadout";
 import { BulletSystem, ENEMY_MISSILE, FlareSystem, MissileSystem, type WeaponEvents } from "./weapons";
 import { buildWorld, type Quality, type World } from "./world";
+import { CATAPULT, CATAPULT_ACCEL, Carrier } from "./carrier";
+import { NAVAL, NAVAL_MISSILE, pickNavalTargets } from "./naval";
+import { ACHIEVEMENTS, startingCharges, streakGrantsCharge, type AchievementId } from "./achievements";
+
+export type TakeoffStage = "ready" | "launch" | "climb";
+export const NAVAL_COLOR = "#7fd0ff";
 
 const boosted = (p: FlightParams): FlightParams => ({ ...p, maxSpeed: p.maxSpeed * BOOST_FX.speedMax, maxThrust: p.maxThrust * BOOST_FX.speedThrust });
 
@@ -191,6 +198,16 @@ export class Game {
   popups: Popup[] = [];
   private streakTimer = 0;
   onGameOver: (s: GameStats) => void = () => {};
+  /* Porta-aviões: decolagem por catapulta e salva naval */
+  readonly carrier: Carrier;
+  readonly takeoff = { active: false, stage: "ready" as TakeoffStage, t: 0, gear: 0 };
+  navalUnlocked = false;
+  navalCharges = 0;
+  private navalQueue: { t: number; target: Combatant }[] = [];
+  /** Conquistas permanentes (o main carrega/salva no navegador e repassa o mesmo Set). */
+  unlocked = new Set<AchievementId>();
+  onAchievement: (id: AchievementId) => void = () => {};
+  achievementToast: { id: AchievementId; t: number } | null = null;
 
   private pendingWave = false;
   private waveTimer = 0;
@@ -239,7 +256,8 @@ export class Game {
     this.missiles = new MissileSystem(this.scene, this.terrain, this.effects, events);
     this.bases = createBases(this.scene, this.terrain);
     this.ground = this.bases.flatMap((b) => b.targets);
-    this.player = this.spawnPlayer();
+    this.carrier = new Carrier(this.scene);
+    this.player = this.spawnPlayer(false);
     this.camQuat.copy(this.player.flight.quat);
     this.drone = new DroneOps(this.terrain);
     this.rings = new RingSystem(this.scene, this.terrain);
@@ -287,19 +305,22 @@ export class Game {
     this.hud.resize(w, h);
   }
 
-  private spawnPlayer(): Aircraft {
+  /** `onDeck`: parado na catapulta do porta-aviões, trem baixado. Senão, já em voo (demonstração do menu). */
+  private spawnPlayer(onDeck: boolean): Aircraft {
+    const f = this.fighter;
     const pos = PLAYER_START.clone();
     pos.y = this.terrain.heightAt(pos.x, pos.z) + 320;
-    const f = this.fighter;
-    const p = new Aircraft("blue", "Você", f.flight, pos, 0, 210, f.id);
+    if (onDeck) this.carrier.catapultPoint(CATAPULT.z0, f.id, pos);
+    const p = new Aircraft("blue", "Você", f.flight, pos, 0, onDeck ? 0 : 210, f.id);
     p.health = p.maxHealth = f.health;
     p.flares = p.maxFlares = f.flares;
+    p.mesh.setGear(onDeck ? 1 : 0);
     p.addTo(this.scene);
     return p;
   }
 
   /** Reinicia a partida sem recriar terreno/texturas (o caro da inicialização). */
-  newGame(throttle: number): void {
+  newGame(throttle: number, onDeck = true): void {
     for (const e of this.enemies) e.plane.removeFrom(this.scene);
     this.enemies = [];
     this.bullets.clear();
@@ -311,8 +332,8 @@ export class Game {
       for (const t of b.targets) t.restore();
     }
     this.player.removeFrom(this.scene);
-    this.player = this.spawnPlayer();
-    this.player.flight.throttle = throttle;
+    this.player = this.spawnPlayer(onDeck);
+    this.player.flight.throttle = onDeck ? 0.25 : throttle;
     this.camQuat.copy(this.player.flight.quat);
     this.score = this.kills = this.groundKills = this.wave = 0;
     this.flightTime = this.outTimer = 0;
@@ -327,6 +348,7 @@ export class Game {
     this.damageFlash = this.hitMarker = this.killMarker = 0;
     this.gun = this.settings.gun;
     this.missile = this.settings.missile;
+    this.player.mesh.setLoadout(MISSILES[this.missile].pylon);
     this.rails = freshRails(this.fighter.extraRails);
     this.boosts = freshBoosts();
     this.boostedParams = boosted(this.fighter.flight);
@@ -344,17 +366,181 @@ export class Game {
     this.rings.reset();
     this.prevPos.copy(this.player.flight.pos);
     this.phase = "playing";
+    this.navalUnlocked = this.unlocked.has("guardiao");
+    this.navalCharges = startingCharges(this.unlocked);
+    this.navalQueue = [];
+    this.achievementToast = null;
+    this.takeoff.active = false;
+    this.carrier.setDeflector(false);
+    if (onDeck) {
+      // Inimigos e objetivos só começam depois que o caça sai do convés (ver endTakeoff).
+      this.pendingWave = false;
+      this.beginTakeoff();
+      return;
+    }
+    this.startMission();
+  }
+
+  private startMission(): void {
     if (this.campaign) {
       this.pendingWave = false;
       this.startPhase(0);
       return;
     }
+    this.pendingWave = true;
+    this.waveTimer = 2.5;
     this.message("Neutralize as bases A, B e C", COLORS.teal, true);
+  }
+
+  /* ---------------- Decolagem do porta-aviões ---------------- */
+
+  private beginTakeoff(): void {
+    const T = this.takeoff;
+    T.active = true;
+    T.stage = "ready";
+    T.t = 0;
+    T.gear = 1;
+    this.carrier.setDeflector(true);
+    this.carrier.setShuttle(CATAPULT.z0 - 6);
+    this.message("Catapulta 1 armada · motor em potência máxima", COLORS.teal, true);
+  }
+
+  /**
+   * Sequência automática: motor acelera com o defletor erguido (2,6 s, ou antes com o gatilho), a catapulta
+   * leva o caça a ~300 km/h no fim do convés, o nariz sobe e o trem recolhe; então o controle é do jogador.
+   */
+  private updateTakeoff(dt: number, inp: InputFrame | null): void {
+    const T = this.takeoff;
+    const p = this.player;
+    const f = p.flight;
+    T.t += dt;
+    this.flightTime += dt;
+    if (inp?.camera) this.cameraMode = this.cameraMode === "chase" ? "cockpit" : "chase";
+    forwardOf(f.quat, _fwd);
+    const deckY = f.pos.y - 2;
+    if (T.stage === "ready") {
+      f.throttle = Math.min(1, f.throttle + dt * 0.45);
+      f.speed = 0;
+      f.vel.set(0, 0, 0);
+      // Vapor escapando do trilho da catapulta.
+      if (Math.random() < dt * 16) {
+        const z = f.pos.z - rand(10, 120);
+        this.effects.smoke.emit(FX.steam, f.pos.x + randSigned() * 0.6, deckY, z, randSigned(), rand(1, 3), randSigned(), 0.6);
+      }
+      if (T.t > 2.6 || (inp && (inp.gun || inp.missile) && T.t > 0.6)) {
+        T.stage = "launch";
+        T.t = 0;
+        this.sfx.missile();
+        this.message("Lançar!", COLORS.amber, true);
+      }
+    } else if (T.stage === "launch") {
+      f.throttle = 1;
+      f.speed += CATAPULT_ACCEL * dt;
+      f.pos.addScaledVector(_fwd, f.speed * dt);
+      f.vel.copy(_fwd).multiplyScalar(f.speed);
+      const lz = this.carrier.localZ(f.pos);
+      this.carrier.setShuttle(lz - 6);
+      for (let k = 0; k < 2; k++) {
+        _v.copy(f.pos).addScaledVector(_fwd, -rand(4, 14));
+        this.effects.smoke.emit(FX.steam, _v.x + randSigned(), deckY, _v.z, randSigned() * 2, rand(1, 4), randSigned() * 2, 0.9);
+      }
+      if (lz <= CATAPULT.z1) {
+        T.stage = "climb";
+        T.t = 0;
+        this.carrier.setDeflector(false);
+      }
+    } else {
+      const c = this.controls;
+      c.roll = arcadeRoll(f.quat, 0);
+      c.yaw = 0;
+      c.throttle = 1;
+      c.assist = true;
+      c.pitch = clamp((0.2 - pitchAngle(f.quat)) * 3, -0.4, 0.7);
+      stepFlight(f, c, dt, p.params);
+      if (T.t > 0.7) T.gear = Math.max(0, T.gear - dt * 1.4);
+      if (T.t > 2.2) this.endTakeoff();
+    }
+    p.mesh.setGear(T.gear);
+  }
+
+  private endTakeoff(): void {
+    const T = this.takeoff;
+    T.active = false;
+    T.gear = 0;
+    this.player.mesh.setGear(0);
+    this.message("Trem recolhido · controle é seu", COLORS.teal);
+    this.achieve("catapulta");
+    this.startMission();
+  }
+
+  /* ---------------- Conquistas e salva naval ---------------- */
+
+  private achieve(id: AchievementId): void {
+    if (this.unlocked.has(id)) return;
+    this.unlocked.add(id);
+    this.achievementToast = { id, t: this.time };
+    this.sfx.hitConfirm();
+    this.log(`Conquista: ${ACHIEVEMENTS[id].title}`, true);
+    this.onAchievement(id);
+  }
+
+  /** +1 salva (até o máximo). A primeira sequência de 3 abates também libera a salva de vez (conquista). */
+  private grantNaval(reason: string): void {
+    if (!this.navalUnlocked) {
+      this.navalUnlocked = true;
+      this.achieve("guardiao");
+    }
+    if (this.navalCharges >= NAVAL.maxCharges) return;
+    this.navalCharges++;
+    this.message(`Salva naval pronta (${reason}) · ${this.hud.touchLayout ? "NAVAL" : "V"}`, NAVAL_COLOR, true);
+  }
+
+  private fireNaval(): void {
+    if (!this.navalUnlocked) {
+      this.message("Salva naval bloqueada · conquista Guardião da Frota: 3 abates em sequência", NAVAL_COLOR);
+      return;
+    }
+    if (this.navalQueue.length) return;
+    if (this.navalCharges <= 0) {
+      this.message("Sem salvas · 3 abates seguidos ou uma base neutralizada recarregam", NAVAL_COLOR);
+      return;
+    }
+    const targets = pickNavalTargets(this.combatants, this.player.flight.pos, NAVAL.salvo);
+    if (!targets.length) {
+      this.message("Salva naval: nenhum alvo inimigo", NAVAL_COLOR);
+      return;
+    }
+    this.navalCharges--;
+    targets.forEach((target, k) => this.navalQueue.push({ t: k * NAVAL.stagger, target }));
+    const air = targets[0]!.kind === "air";
+    this.message(`Porta-aviões: ${targets.length} mísseis contra ${air ? "os caças" : "alvos em solo"}`, NAVAL_COLOR, true);
+    this.log("Salva naval lançada", true);
+  }
+
+  private updateNaval(dt: number): void {
+    for (const q of this.navalQueue) q.t -= dt;
+    while (this.navalQueue[0] && this.navalQueue[0].t <= 0) {
+      const { target } = this.navalQueue.shift()!;
+      const cell = this.carrier.openCell();
+      _v.set(0, 1, 0);
+      this.missiles.launch(this.carrier.unit, "blue", cell, _v, NAVAL.launchSpeed, target.isAlive() ? target : null, NAVAL_MISSILE);
+      for (let k = 0; k < 6; k++) {
+        this.effects.smoke.emit(FX.missileSmoke, cell.x + randSigned() * 2, cell.y + rand(0, 3), cell.z + randSigned() * 2, randSigned() * 6, rand(0, 4), randSigned() * 6, 1.6);
+      }
+      this.effects.glow.emit(FX.flash, cell.x, cell.y + 2, cell.z, 0, 0, 0, 0.35);
+      this.sfx.missile();
+    }
+    // Datalink: míssil naval cujo alvo caiu (ou que caiu num flare apagado) é redirecionado ao inimigo mais próximo.
+    for (const m of this.missiles.active) {
+      if (m.owner !== this.carrier.unit || m.age < (NAVAL_MISSILE.guideDelay ?? 0)) continue;
+      if (m.target && m.target.isAlive()) continue;
+      m.target = pickNavalTargets(this.combatants, m.pos, 1)[0] ?? null;
+    }
   }
 
   /** Volta ao voo de demonstração atrás do menu. */
   attract(): void {
-    this.newGame(0.7);
+    this.newGame(0.7, false);
     this.phase = "attract";
     this.pendingWave = false;
     this.messages = [];
@@ -417,12 +603,15 @@ export class Game {
     const p = this.player;
 
     if (this.phase === "attract") this.autopilot(dt);
+    else if (this.phase === "playing" && p.alive && this.takeoff.active) this.updateTakeoff(dt, inp);
     else if (this.phase === "playing" && p.alive && inp) {
       if (this.drone.active) this.flyDrone(dt, inp);
       else this.flyPlayer(dt, inp);
     }
     if (this.phase === "playing" && p.alive) this.checkRings(dt);
     this.prevPos.copy(p.flight.pos);
+    this.carrier.update(dt);
+    if (this.phase === "playing") this.updateNaval(dt);
 
     this.updateEnemies(dt);
     this.updateGround(dt);
@@ -532,6 +721,7 @@ export class Game {
 
     if (inp.camera) this.cameraMode = this.cameraMode === "chase" ? "cockpit" : "chase";
     if (inp.drone) this.startDrone();
+    if (inp.naval) this.fireNaval();
     if (inp.switchGun) this.cycleGun();
     if (inp.switchMissile) this.cycleMissile();
 
@@ -698,6 +888,7 @@ export class Game {
 
   private cycleMissile(): void {
     this.missile = MISSILE_ORDER[(MISSILE_ORDER.indexOf(this.missile) + 1) % MISSILE_ORDER.length]!;
+    this.player.mesh.setLoadout(MISSILES[this.missile].pylon);
     this.lock.target = null;
     this.lock.time = 0;
     this.lock.locked = false;
@@ -949,7 +1140,7 @@ export class Game {
     if (!target.isAlive() || amount <= 0) return;
     const byPlayer = owner === this.player;
     if (target instanceof Aircraft) {
-      if (target === this.player && this.drone.active) return; // operando o drone: caça fora de combate
+      if (target === this.player && (this.drone.active || this.takeoff.active)) return; // drone ou convés: fora de combate
       if (target === this.player) {
         amount *= this.difficulty.damageTaken * this.fighter.armor * (this.boostActive("shield") ? BOOST_FX.shield : 1);
         if (owner) {
@@ -982,9 +1173,12 @@ export class Game {
 
   private killAircraft(a: Aircraft, owner: Combatant | null): void {
     if (!a.alive) return;
+    // Míssil do porta-aviões conta como abate do jogador (objetivos e pontos), mas não alimenta a sequência:
+    // senão a salva recarregaria a si mesma.
+    const naval = owner === this.carrier.unit;
     if (this.enemies.some((e) => e.boss && e.plane === a)) {
       this.bossDown = true;
-      if (owner === this.player) this.addScore(1000, "Ás Lâmina");
+      if (owner === this.player || naval) this.addScore(1000, "Ás Lâmina");
       this.message("Ás Lâmina abatido!", COLORS.amber, true);
     }
     a.alive = false;
@@ -997,6 +1191,7 @@ export class Game {
 
     if (a === this.player) {
       this.endDrone();
+      this.takeoff.active = false;
       this.phase = "dying";
       this.deathTimer = 4;
       this.deathFocus.copy(a.flight.pos);
@@ -1019,6 +1214,14 @@ export class Game {
       this.player.heal(10);
       if (this.streak % 2 === 0) this.grantBoost("reload");
       if (this.streak % 3 === 0) this.grantBoost("damage");
+      if (streakGrantsCharge(this.streak)) this.grantNaval(`${this.streak} abates seguidos`);
+    } else if (naval) {
+      this.kills++;
+      this.killMarker = 0.5;
+      this.addScore(100, "salva naval");
+      this.message(`Míssil naval abateu ${a.name}`, NAVAL_COLOR, true);
+      this.log(`Porta-aviões abateu ${a.name}`, true);
+      this.achieve("almirante");
     } else {
       this.log(`${a.name} caiu`, false);
     }
@@ -1029,7 +1232,7 @@ export class Game {
     this.effects.groundBlast(t.position, t.type === "fuel" ? 2 : 1.3);
     this.sfx.explosion(t.position.distanceTo(this.camera.position));
     if (this.lock.target === t) this.lock.target = null;
-    if (owner === this.player) {
+    if (owner === this.player || owner === this.carrier.unit) {
       this.groundKills++;
       this.addScore(t.score, t.label.toLowerCase());
       this.addCharge(0.12);
@@ -1046,6 +1249,7 @@ export class Game {
       for (const id of MISSILE_ORDER) this.rails[id].fill(0);
       this.player.flares = this.player.maxFlares;
       this.log(`Base ${base.id} neutralizada`, true);
+      if (this.navalUnlocked) this.grantNaval(`base ${base.id}`);
       if (this.bases.every((b) => b.captured)) {
         this.rebuildTimer = 35;
         this.message("Todas as bases caíram. Reforços em 35 s", COLORS.teal);
@@ -1059,6 +1263,8 @@ export class Game {
       const f = a.flight;
       if (f.pos.y - this.terrain.heightAt(f.pos.x, f.pos.z) < 2) {
         f.pos.y = this.terrain.heightAt(f.pos.x, f.pos.z) + 2;
+        this.killAircraft(a, null);
+      } else if (!(a === this.player && this.takeoff.active) && this.carrier.collides(f.pos)) {
         this.killAircraft(a, null);
       }
     }
@@ -1228,6 +1434,7 @@ export class Game {
   }
 
   private updateRules(dt: number): void {
+    if (this.takeoff.active) return; // ainda no convés: nada de ondas nem objetivos
     if (this.phase === "playing" && this.campaign) this.updateCampaign(dt);
     else if (this.phase === "playing") {
       const alive = this.enemies.some((e) => e.plane.alive);
@@ -1297,6 +1504,17 @@ export class Game {
       cam.position.copy(f.pos).addScaledVector(_up, 1.15).addScaledVector(_fwd, -3.2);
       cam.quaternion.copy(f.quat);
       this.camQuat.copy(f.quat);
+    } else if (this.takeoff.active) {
+      // Decolagem: começa de lado, à frente da asa (caça, defletor e vapor no quadro) e gira para trás do caça.
+      const T = this.takeoff;
+      const k = T.stage === "ready" ? 0 : T.stage === "launch" ? Math.min(1, T.t / 2.4) : 1;
+      const s = k * k * (3 - 2 * k);
+      this.camQuat.slerp(f.quat, damp(5, dt));
+      const a = (1 - s) * 1.95; // ângulo em volta do caça: ~110° à esquerda → atrás
+      _offset.set(-Math.sin(a) * (17 + 7 * s), 3.4 + 1.8 * s, Math.cos(a) * (17 + 7 * s)).applyQuaternion(this.camQuat);
+      cam.position.copy(f.pos).add(_offset);
+      forwardOf(f.quat, _fwd);
+      cam.lookAt(_v.copy(f.pos).addScaledVector(_fwd, 30 * s));
     } else {
       // Câmera presa à orientação suavizada do avião: o jato "escorrega" no quadro durante manobras.
       this.camQuat.slerp(f.quat, damp(this.phase === "attract" ? 2 : 6, dt));

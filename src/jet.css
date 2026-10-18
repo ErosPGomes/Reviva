@@ -689,3 +689,319 @@ kbd {
     transition: none;
   }
 }
+
+/* ---------- Hangar: prévia 3D do caça e do armamento ---------- */
+
+/*
+ * Um único canvas WebGL cobre o hangar por cima dos cartões (pointer-events: none) e desenha cada cena no
+ * retângulo do seu .stage__view. Os cartões só fornecem moldura, nomes e barras comparativas.
+ */
+.hangar {
+  position: relative;
+  display: none;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.hangar__canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.hangar__row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  padding: 14px 16px;
+  background: rgba(9, 19, 23, 0.55);
+  border: 1px solid var(--line);
+  clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
+  transition: border-color 0.25s, background-color 0.25s;
+}
+
+.stage.is-focus {
+  border-color: var(--teal);
+  background: rgba(14, 34, 38, 0.62);
+}
+
+.stage--jet {
+  flex: 1;
+}
+
+.stage__head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.stage__name {
+  margin: 0;
+  font-size: 1.6rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.stage__name--small {
+  font-size: 1rem;
+}
+
+.stage__tag {
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--amber);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.stage__view {
+  flex: 1;
+  min-height: 120px;
+}
+
+.stage__view--card {
+  flex: none;
+  height: 140px;
+  min-height: 0;
+}
+
+.stats {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr));
+  gap: 6px 16px;
+}
+
+.stats--small {
+  grid-template-columns: 1fr;
+  gap: 4px;
+}
+
+.stat {
+  display: grid;
+  grid-template-columns: 6.6rem 1fr;
+  grid-template-rows: auto auto;
+  align-items: center;
+  column-gap: 8px;
+  font-size: 0.7rem;
+  color: var(--ink-dim);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.stat__bar {
+  height: 5px;
+  background: rgba(255, 255, 255, 0.08);
+  position: relative;
+  overflow: hidden;
+}
+
+.stat__bar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: calc(var(--v, 0) * 100%);
+  background: var(--teal);
+  transition: width 0.35s ease-out;
+}
+
+.stat__value {
+  grid-column: 2;
+  font-size: 0.66rem;
+  color: var(--ink);
+  text-transform: none;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Lado a lado: painel de opções à esquerda, hangar à direita. */
+@media (min-width: 980px), (min-width: 700px) and (orientation: landscape) {
+  #menu {
+    gap: 20px;
+  }
+
+  #menu .panel {
+    flex: none;
+    max-height: 100%;
+    overflow-y: auto;
+  }
+
+  .hangar {
+    display: flex;
+    flex: 1;
+    max-width: 50rem;
+    height: min(calc(100dvh - 32px), 760px);
+    margin-left: auto;
+  }
+}
+
+/* Telas baixas (celular deitado): cartões compactos, sem barras nos cards menores. */
+@media (max-height: 560px) {
+  .stage {
+    padding: 10px 12px;
+  }
+
+  .stage__name {
+    font-size: 1.15rem;
+  }
+
+  .stage__view--card {
+    height: 76px;
+  }
+
+  .stats--small {
+    display: none;
+  }
+
+  .stage--jet .stats {
+    grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr));
+  }
+}
+
+/* Retrato/estreito: hangar fixo no topo enquanto as opções rolam por baixo. */
+@media (max-width: 979px) and (orientation: portrait), (max-width: 699px) {
+  #menu {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .hangar {
+    display: flex;
+    order: -1;
+    position: sticky;
+    top: calc(-1 * max(16px, env(safe-area-inset-top, 0px)));
+    z-index: 3;
+    height: min(46dvh, 420px);
+    margin: calc(-1 * max(16px, env(safe-area-inset-top, 0px))) 0 12px;
+    padding-top: max(16px, env(safe-area-inset-top, 0px));
+    background: var(--bg);
+  }
+
+  .stage__view--card {
+    height: 64px;
+  }
+
+  .stats--small,
+  .stage--jet .stats {
+    display: none;
+  }
+
+  #menu .panel {
+    width: 100%;
+    box-sizing: border-box;
+  }
+}
+
+/* ---------- Conquistas ---------- */
+
+.achievements {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.achievements__title {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+}
+
+.achievements__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ach {
+  display: grid;
+  grid-template-columns: 2rem 1fr;
+  gap: 2px 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.02);
+  color: var(--ink-dim);
+  font-size: 0.74rem;
+}
+
+.ach__icon {
+  grid-row: span 2;
+  font-size: 1.3rem;
+  text-align: center;
+  filter: grayscale(1);
+  opacity: 0.45;
+}
+
+.ach__title {
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.ach.is-done {
+  border-color: rgba(255, 196, 92, 0.55);
+  background: rgba(255, 160, 67, 0.08);
+  color: var(--ink);
+}
+
+.ach.is-done .ach__icon {
+  filter: none;
+  opacity: 1;
+}
+
+.ach.is-done .ach__title {
+  color: var(--amber);
+}
+
+/* ---------- Botão da salva naval (toque) ---------- */
+
+.tbtn--naval {
+  border-color: rgba(127, 208, 255, 0.45);
+  right: calc(326px + env(safe-area-inset-right, 0px));
+}
+
+.tbtn--naval.is-ready {
+  border-color: #7fd0ff;
+  background: rgba(127, 208, 255, 0.35);
+  color: var(--ink);
+}
+
+.tbtn--naval.is-locked {
+  opacity: 0.35;
+}
+
+/* Fichas dos cards em duas colunas: sobra altura para a prévia 3D. */
+.stats--small {
+  grid-template-columns: 1fr 1fr;
+  gap: 5px 12px;
+}
+
+.stats--small .stat {
+  grid-template-columns: 1fr;
+  font-size: 0.64rem;
+}
+
+.stats--small .stat__value {
+  grid-column: 1;
+}

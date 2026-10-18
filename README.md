@@ -9,7 +9,24 @@ Combate aéreo 3D a baixa altitude no navegador. Three.js + TypeScript (strict) 
 - **Missão**: neutralizar as bases A, B e C (antiaéreas, blindados, combustível) e derrubar ondas de caças com IA crescente.
 - **Armas**: canhão com superaquecimento, 2 trilhos de míssil com trava (1,3 s no cone) e recarga, flares contra mísseis.
 - **Controles**: teclado/mouse, toque (manche virtual + trilho de potência + botões) e gamepad, sem configuração.
-- **Mundo**: 18 × 18 km, lavouras em grade com fileiras de plantio no shader, fazendas com silos, cercas vivas, serras na borda.
+- **Mundo**: 18 × 18 km, lavouras em grade com fileiras de plantio no shader, fazendas com silos, cercas vivas, serras na borda e uma baía ao sul com o porta-aviões.
+- **Hangar no menu**: prévia 3D do caça (girando, com trem baixado e o míssil escolhido nos cabides), do míssil e da metralhadora (rajada com traçante na cor real), com barras comparativas: velocidade/agilidade/blindagem, alcance/trava/dano/raio/resistência a flares, cadência/dano/alcance/rajada.
+
+### Porta-aviões
+
+Toda surtida começa no convés (escala de um classe Nimitz): defletor de jato ergue, o motor vai à potência máxima e a catapulta leva o caça a ~300 km/h em 126 m; o nariz sobe, o trem recolhe e o controle volta ao jogador. **Espaço** (ou CANHÃO no toque) antecipa o lançamento. Inimigos e objetivos só começam depois da decolagem. O navio é sólido: dá para bater na ilha.
+
+### Salva naval e conquistas
+
+16 células de lançamento vertical na popa disparam mísseis guiados por datalink (subida vertical, 170 de dano, quase imunes a flares; se o alvo cai, o míssil é redirecionado ao inimigo mais próximo). **V** lança 4 contra os caças mais próximos; sem caças, contra alvos em solo. Abates da salva contam para os objetivos, mas não para a sequência.
+
+| Conquista | Como | Recompensa |
+|---|---|---|
+| Catapulta! | decolar do porta-aviões | — |
+| **Guardião da Frota** | 3 abates em sequência | libera a salva naval de vez: cada surtida começa com 1; +1 a cada 3 abates seguidos ou base neutralizada (máx. 2) |
+| Fogo do Almirante | abater um caça com a salva naval | — |
+
+Conquistas ficam salvas no navegador e aparecem no menu.
 
 ### Modos
 
@@ -87,6 +104,7 @@ A sequência zera após 25 s sem abate. Boosts renovados acumulam até o dobro d
 | Enter, M ou clique direito | míssil |
 | T / G | trocar míssil / metralhadora |
 | B | drone (quando a barra roxa estiver cheia) |
+| V | salva naval do porta-aviões (após a conquista) |
 | X | flares |
 | C | câmera |
 | Esc | pausa |
@@ -96,7 +114,7 @@ A sequência zera após 25 s sem abate. Boosts renovados acumulam até o dobro d
 ```bash
 npm install
 npm run dev     # servidor local
-npm test        # modelo de voo, terreno, geometria de armas, lavouras
+npm test        # modelo de voo, terreno, armas, lavouras, baía/catapulta, salva naval, conquistas
 npm run build   # typecheck + build estático em dist/
 ```
 
@@ -107,7 +125,7 @@ Push em `main` publica no GitHub Pages via `.github/workflows/deploy.yml`.
 ```
 src/
   flight.ts   modelo de voo (empuxo/arrasto/gravidade, estol, teto, modo arcade)
-  terrain.ts  grade de alturas compartilhada entre malha e colisão
+  terrain.ts  grade de alturas compartilhada entre malha e colisão (com a baía: colisão na superfície da água)
   fields.ts   layout das lavouras + textura RGBA (alfa = orientação das fileiras)
   world.ts    céu, luz, árvores/fazendas instanciadas, nuvens
   ai.ts       piloto inimigo bank-to-turn (chão > arena > evasão > ataque)
@@ -115,6 +133,9 @@ src/
   particles.ts / effects.ts  billboards instanciados (1 draw call por fila)
   fighters.ts caças jogáveis (voo, vida, furtividade, trilhos, multiplicadores)
   campaign.ts fases e objetivos (funções puras, testadas)
+  carrier.ts  porta-aviões: casco, convés pintado em canvas, catapulta, defletor, células de lançamento
+  naval.ts    míssil naval e escolha de alvos da salva; achievements.ts conquistas persistentes
+  hangar.ts   prévia 3D do menu (um renderer, três recortes); stats.ts fichas comparativas
   drone.ts    drone com Hellfire guiado a laser; thermal.ts visão térmica (pós-processo + materiais quentes)
   rings.ts    anéis de recompensa e teste de travessia
   loadout.ts  tabelas de dificuldade, metralhadoras, mísseis e boosts (balanceamento em um só lugar)

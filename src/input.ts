@@ -13,6 +13,7 @@ export interface InputFrame {
   switchGun: boolean;
   switchMissile: boolean;
   drone: boolean;
+  naval: boolean; // salva de mísseis do porta-aviões
 }
 
 const DEADZONE = 0.12;
@@ -75,7 +76,7 @@ export class Input {
   }
 
   private bindTouch(ui: TouchUI): void {
-    const { zone, base, knob, throttle, throttleFill, gun, missile, flare, camera, pause, gunSwitch, missileSwitch, drone } = ui;
+    const { zone, base, knob, throttle, throttleFill, gun, missile, flare, camera, pause, gunSwitch, missileSwitch, drone, naval } = ui;
     zone.addEventListener("pointerdown", (e) => {
       if (this.stick.id !== -1) return;
       zone.setPointerCapture(e.pointerId);
@@ -150,6 +151,7 @@ export class Input {
     tap(gunSwitch, "Touch:gunSwitch");
     tap(missileSwitch, "Touch:missileSwitch");
     tap(drone, "Touch:drone");
+    tap(naval, "Touch:naval");
   }
 
   private edge(...codes: string[]): boolean {
@@ -203,6 +205,7 @@ export class Input {
       switchGun: this.edge("KeyG", "Touch:gunSwitch") || !!padEdge[12],
       switchMissile: this.edge("KeyT", "Tab", "Touch:missileSwitch") || !!padEdge[2],
       drone: this.edge("KeyB", "Touch:drone") || !!padEdge[13],
+      naval: this.edge("KeyV", "Touch:naval") || !!padEdge[14],
     };
     this.edges.clear();
     return frame;
@@ -244,4 +247,5 @@ export interface TouchUI {
   gunSwitch: HTMLElement;
   missileSwitch: HTMLElement;
   drone: HTMLElement;
+  naval: HTMLElement;
 }

@@ -1,3 +1,4 @@
+import type { MissileLook } from "./models";
 import type { MissileSpec } from "./weapons";
 
 /**
@@ -199,6 +200,7 @@ export interface MissileLoadout {
   readonly rails: number;
   readonly reload: number;
   readonly salvo: number; // projéteis por disparo
+  readonly pylon: MissileLook; // o que aparece pendurado na asa (foguetes: o casulo)
   readonly spec: MissileSpec;
 }
 
@@ -216,7 +218,8 @@ export const MISSILES: Record<MissileId, MissileLoadout> = {
     rails: 2,
     reload: 5.5,
     salvo: 1,
-    spec: { damage: 100, maxSpeed: 720, turnRate: 0.95, gimbal: 1.3, flareResist: 0.15, splash: 30, motorTime: 2.6 },
+    pylon: "ir",
+    spec: { damage: 100, maxSpeed: 720, turnRate: 0.95, gimbal: 1.3, flareResist: 0.15, splash: 30, motorTime: 2.6, look: "ir" },
   },
   radar: {
     id: "radar",
@@ -231,7 +234,8 @@ export const MISSILES: Record<MissileId, MissileLoadout> = {
     rails: 2,
     reload: 9,
     salvo: 1,
-    spec: { damage: 100, maxSpeed: 900, turnRate: 0.62, gimbal: 1, flareResist: 0.75, splash: 30, motorTime: 4 },
+    pylon: "radar",
+    spec: { damage: 100, maxSpeed: 900, turnRate: 0.62, gimbal: 1, flareResist: 0.75, splash: 30, motorTime: 4, look: "radar" },
   },
   agm: {
     id: "agm",
@@ -246,7 +250,8 @@ export const MISSILES: Record<MissileId, MissileLoadout> = {
     rails: 2,
     reload: 6,
     salvo: 1,
-    spec: { damage: 220, maxSpeed: 520, turnRate: 1.2, gimbal: 1.5, flareResist: 1, splash: 60, motorTime: 3.5 },
+    pylon: "agm",
+    spec: { damage: 220, maxSpeed: 520, turnRate: 1.2, gimbal: 1.5, flareResist: 1, splash: 60, motorTime: 3.5, look: "agm" },
   },
   rockets: {
     id: "rockets",
@@ -261,7 +266,8 @@ export const MISSILES: Record<MissileId, MissileLoadout> = {
     rails: 1,
     reload: 6,
     salvo: 8,
-    spec: { damage: 40, maxSpeed: 700, turnRate: 0, gimbal: 0, flareResist: 1, splash: 20, motorTime: 1.2 },
+    pylon: "rockets",
+    spec: { damage: 40, maxSpeed: 700, turnRate: 0, gimbal: 0, flareResist: 1, splash: 20, motorTime: 1.2, look: "rocket" },
   },
 };
 

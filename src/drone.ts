@@ -17,12 +17,12 @@ export const WARHEADS: Record<DroneWarhead, { name: string; short: string; spec:
   hellfire: {
     name: "AGM-114 Hellfire",
     short: "HELLFIRE",
-    spec: { damage: 260, maxSpeed: 450, turnRate: 2.6, gimbal: 3.1, flareResist: 1, splash: 26, motorTime: 3 },
+    spec: { damage: 260, maxSpeed: 450, turnRate: 2.6, gimbal: 3.1, flareResist: 1, splash: 26, motorTime: 3, look: "agm" },
   },
   thermo: {
     name: "AGM-114N termobárico",
     short: "TERMOBÁRICO",
-    spec: { damage: 190, maxSpeed: 420, turnRate: 2.2, gimbal: 3.1, flareResist: 1, splash: 75, motorTime: 3 },
+    spec: { damage: 190, maxSpeed: 420, turnRate: 2.2, gimbal: 3.1, flareResist: 1, splash: 75, motorTime: 3, look: "agm" },
   },
 };
 

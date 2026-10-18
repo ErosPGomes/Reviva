@@ -22,6 +22,7 @@
       <button type="button" id="btn-flare" class="tbtn tbtn--flare">Flares</button>
       <button type="button" id="btn-missile-switch" class="tbtn tbtn--swap tbtn--swap-missile" aria-label="Trocar míssil">MSL ⇄</button>
       <button type="button" id="btn-drone" class="tbtn tbtn--drone" aria-label="Chamar drone">DRONE</button>
+      <button type="button" id="btn-naval" class="tbtn tbtn--drone tbtn--naval" aria-label="Salva naval do porta-aviões">NAVAL</button>
       <button type="button" id="btn-gun-switch" class="tbtn tbtn--swap tbtn--swap-gun" aria-label="Trocar metralhadora">ARMA ⇄</button>
       <button type="button" id="btn-camera" class="tbtn tbtn--small tbtn--camera" aria-label="Trocar câmera">CAM</button>
       <button type="button" id="btn-pause" class="tbtn tbtn--small tbtn--pause" aria-label="Pausar">II</button>
@@ -37,8 +38,8 @@
         <p class="eyebrow">Combate aéreo · baixa altitude</p>
         <h1 class="title">Céu de Aço</h1>
         <p class="lede">
-          Três bases inimigas no meio das lavouras e ondas de caças cada vez mais espertos. As antiaéreas disparam
-          rajadas de flak; voar rasante esconde você, até o milharal chegar perto demais.
+          Catapulta do porta-aviões, três bases inimigas no meio das lavouras e ondas de caças cada vez mais
+          espertos. Derrube 3 em sequência e o navio passa a lançar mísseis por você.
         </p>
         <div class="actions">
           <button type="button" id="start" class="btn btn--primary">Decolar</button>
@@ -75,6 +76,11 @@
           <p class="picker__desc" aria-live="polite"></p>
         </fieldset>
 
+        <section class="achievements" aria-labelledby="ach-title">
+          <h2 class="achievements__title" id="ach-title">Conquistas</h2>
+          <ul class="achievements__list" id="ach-list"></ul>
+        </section>
+
         <fieldset class="settings">
           <legend>Ajustes</legend>
           <label class="toggle" for="opt-arcade">
@@ -107,9 +113,13 @@
               <kbd>W</kbd><kbd>S</kbd> arfagem · <kbd>A</kbd><kbd>D</kbd> rolagem · <kbd>Q</kbd><kbd>E</kbd> leme ·
               <kbd>R</kbd>/<kbd>Shift</kbd> acelera · <kbd>F</kbd> reduz · <kbd>Espaço</kbd> ou clique: canhão ·
               <kbd>Enter</kbd>, <kbd>M</kbd> ou clique direito: míssil · <kbd>T</kbd> troca míssil · <kbd>G</kbd> troca
-              metralhadora · <kbd>X</kbd> flares · <kbd>B</kbd> drone · <kbd>C</kbd> câmera ·
+              metralhadora · <kbd>X</kbd> flares · <kbd>B</kbd> drone · <kbd>V</kbd> salva naval · <kbd>C</kbd> câmera ·
               <kbd>Esc</kbd> pausa
             </dd>
+            <dt>Decolagem</dt>
+            <dd>A missão começa no convés do porta-aviões: a catapulta lança o caça sozinha. <kbd>Espaço</kbd> antecipa o lançamento; o controle volta a você assim que o trem de pouso recolhe.</dd>
+            <dt>Salva naval</dt>
+            <dd>Conquista <strong>Guardião da Frota</strong> (3 abates em sequência) libera de vez os mísseis do porta-aviões: <kbd>V</kbd> lança 4 contra os caças mais próximos (sem caças, contra alvos em solo). Cada surtida começa com 1 salva; ganhe outra a cada 3 abates seguidos ou base neutralizada (máx. 2).</dd>
             <dt>Toque</dt>
             <dd>Metade esquerda da tela é o manche. Trilho à direita controla a potência. Botões para canhão, míssil e flares.</dd>
             <dt>Controle</dt>
@@ -125,6 +135,38 @@
           </dl>
         </details>
       </div>
+
+      <aside class="hangar" id="hangar" aria-label="Prévia do caça e do armamento escolhidos">
+        <canvas id="hangar-canvas" class="hangar__canvas" aria-hidden="true"></canvas>
+        <div class="stage stage--jet is-focus">
+          <header class="stage__head">
+            <p class="eyebrow" id="hg-jet-role">Multimissão</p>
+            <h2 class="stage__name" id="hg-jet-name">Falcão</h2>
+          </header>
+          <div class="stage__view" id="hg-jet-view"></div>
+          <ul class="stats" id="hg-jet-stats"></ul>
+        </div>
+        <div class="hangar__row">
+          <div class="stage stage--card">
+            <header class="stage__head">
+              <p class="eyebrow">Míssil inicial</p>
+              <h3 class="stage__name stage__name--small" id="hg-missile-name">Víbora IR</h3>
+              <p class="stage__tag" id="hg-missile-tag">Ar e solo</p>
+            </header>
+            <div class="stage__view stage__view--card" id="hg-missile-view"></div>
+            <ul class="stats stats--small" id="hg-missile-stats"></ul>
+          </div>
+          <div class="stage stage--card">
+            <header class="stage__head">
+              <p class="eyebrow">Metralhadora</p>
+              <h3 class="stage__name stage__name--small" id="hg-gun-name">.50</h3>
+              <p class="stage__tag" id="hg-gun-tag">12,7 mm</p>
+            </header>
+            <div class="stage__view stage__view--card" id="hg-gun-view"></div>
+            <ul class="stats stats--small" id="hg-gun-stats"></ul>
+          </div>
+        </div>
+      </aside>
     </section>
 
     <section id="pause" class="overlay overlay--center" hidden>

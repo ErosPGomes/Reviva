@@ -7,11 +7,15 @@ import { Hud } from "./hud";
 import { Input, type TouchUI } from "./input";
 import { FIGHTERS, FIGHTER_ORDER } from "./fighters";
 import { DIFFICULTIES, GUNS, GUN_ORDER, MISSILES, MISSILE_ORDER, type Difficulty } from "./loadout";
+import { ACHIEVEMENTS, ACHIEVEMENT_ORDER, parseAchievements, type AchievementId } from "./achievements";
+import { Hangar } from "./hangar";
+import { fighterRows, gunRows, missileRows, missileTargets, type StatRow } from "./stats";
 
 type UiState = "menu" | "playing" | "paused" | "over";
 
 const SETTINGS_KEY = "ceu-de-aco.settings";
 const BEST_KEY = "ceu-de-aco.best";
+const ACH_KEY = "ceu-de-aco.achievements";
 const START_THROTTLE = 0.75;
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string): T => {
@@ -56,6 +60,7 @@ if (!(settings.fighter in FIGHTERS)) settings.fighter = "falcao";
 if (settings.mode !== "campanha" && settings.mode !== "sobrevivencia") settings.mode = "campanha";
 if (!(settings.missile in MISSILES)) settings.missile = "ir";
 let best = load<{ v: number }>(BEST_KEY, { v: 0 }).v;
+const unlocked = parseAchievements(load<{ ids: unknown }>(ACH_KEY, { ids: [] }).ids);
 
 const ui = {
   loading: $("loading"),
@@ -80,10 +85,12 @@ const touchUi: TouchUI = {
   gunSwitch: $("btn-gun-switch"),
   missileSwitch: $("btn-missile-switch"),
   drone: $("btn-drone"),
+  naval: $("btn-naval"),
 };
 
 let state: UiState = "menu";
 const droneBtn = $("btn-drone");
+const navalBtn = $("btn-naval");
 const sfx = new Sfx();
 const hud = new Hud($<HTMLCanvasElement>("hud"));
 const input = new Input(touchUi, () => syncTouch());
@@ -92,6 +99,80 @@ input.touchMode = coarse;
 hud.touchLayout = coarse;
 
 let game: Game | null = null;
+
+/* ---------- Hangar (prévia 3D) e fichas comparativas ---------- */
+
+// WebGL do hangar é opcional: se o navegador recusar um segundo contexto, o menu segue só com as fichas.
+let hangar: Hangar | null = null;
+try {
+  hangar = new Hangar($<HTMLCanvasElement>("hangar-canvas"), { jet: $("hg-jet-view"), missile: $("hg-missile-view"), gun: $("hg-gun-view") });
+} catch {
+  hangar = null;
+}
+
+function renderStats(id: string, rows: readonly StatRow[]): void {
+  const ul = $(id);
+  ul.replaceChildren(
+    ...rows.map((r) => {
+      const li = document.createElement("li");
+      li.className = "stat";
+      const label = document.createElement("span");
+      label.textContent = r.label;
+      const bar = document.createElement("span");
+      bar.className = "stat__bar";
+      bar.style.setProperty("--v", r.value.toFixed(3));
+      const value = document.createElement("span");
+      value.className = "stat__value";
+      value.textContent = r.text;
+      li.append(label, bar, value);
+      return li;
+    }),
+  );
+}
+
+function syncHangar(): void {
+  const f = FIGHTERS[settings.fighter];
+  $("hg-jet-role").textContent = f.role;
+  $("hg-jet-name").textContent = f.name;
+  renderStats("hg-jet-stats", fighterRows(settings.fighter));
+  const m = MISSILES[settings.missile];
+  $("hg-missile-name").textContent = m.name;
+  $("hg-missile-tag").textContent = missileTargets(settings.missile);
+  renderStats("hg-missile-stats", missileRows(settings.missile));
+  const g = GUNS[settings.gun];
+  $("hg-gun-name").textContent = g.name;
+  $("hg-gun-tag").textContent = g.desc.split(" · ")[0] ?? "";
+  renderStats("hg-gun-stats", gunRows(settings.gun));
+}
+
+function renderAchievements(): void {
+  $("ach-list").replaceChildren(
+    ...ACHIEVEMENT_ORDER.map((id) => {
+      const a = ACHIEVEMENTS[id];
+      const done = unlocked.has(id);
+      const li = document.createElement("li");
+      li.className = `ach${done ? " is-done" : ""}`;
+      const icon = document.createElement("span");
+      icon.className = "ach__icon";
+      icon.textContent = a.icon;
+      icon.setAttribute("aria-hidden", "true");
+      const title = document.createElement("span");
+      title.className = "ach__title";
+      title.textContent = `${a.title}${done ? " ✓" : ""}`;
+      const desc = document.createElement("span");
+      desc.textContent = done ? a.reward : a.desc;
+      li.append(icon, title, desc);
+      return li;
+    }),
+  );
+}
+
+/** O jogo já marcou a conquista no mesmo Set; aqui só persiste e atualiza a lista do menu. */
+function onAchievement(id: AchievementId): void {
+  unlocked.add(id);
+  save(ACH_KEY, { ids: [...unlocked] });
+  renderAchievements();
+}
 
 function syncTouch(): void {
   hud.touchLayout = input.touchMode;
@@ -165,12 +246,28 @@ bindPicker(
   () => settings.fighter,
   (k) => {
     settings.fighter = k;
+    hangar?.setFighter(k);
+    syncHangar();
     // O voo de demonstração atrás do menu já mostra o caça escolhido.
     if (state === "menu") game?.attract();
   },
 );
-bindPicker("pick-gun", GUN_ORDER, (k) => GUNS[k].short, (k) => `${GUNS[k].name} · ${GUNS[k].desc}`, () => settings.gun, (k) => (settings.gun = k));
-bindPicker("pick-missile", MISSILE_ORDER, (k) => MISSILES[k].short, (k) => `${MISSILES[k].name} · ${MISSILES[k].desc}`, () => settings.missile, (k) => (settings.missile = k));
+bindPicker("pick-gun", GUN_ORDER, (k) => GUNS[k].short, (k) => `${GUNS[k].name} · ${GUNS[k].desc}`, () => settings.gun, (k) => {
+  settings.gun = k;
+  hangar?.setGun(k);
+  syncHangar();
+});
+bindPicker("pick-missile", MISSILE_ORDER, (k) => MISSILES[k].short, (k) => `${MISSILES[k].name} · ${MISSILES[k].desc}`, () => settings.missile, (k) => {
+  settings.missile = k;
+  hangar?.setMissile(k);
+  syncHangar();
+  if (state === "menu") game?.attract();
+});
+hangar?.setMissile(settings.missile);
+hangar?.setGun(settings.gun);
+hangar?.setFighter(settings.fighter);
+syncHangar();
+renderAchievements();
 
 bindSetting("opt-arcade", () => settings.arcade, (v) => (settings.arcade = v));
 bindSetting("opt-invert", () => settings.invertY, (v) => (input.invertY = settings.invertY = v));
@@ -282,7 +379,10 @@ function frame(now: number): void {
     }
     game.render();
     droneBtn.classList.toggle("is-ready", game.droneCharge >= 1 || game.drone.active);
+    navalBtn.classList.toggle("is-ready", game.navalUnlocked && game.navalCharges > 0);
+    navalBtn.classList.toggle("is-locked", !game.navalUnlocked);
   }
+  if (state === "menu") hangar?.render(dt);
 }
 
 async function boot(): Promise<void> {
@@ -296,6 +396,8 @@ async function boot(): Promise<void> {
     throw err;
   }
   game.onGameOver = gameOver;
+  game.unlocked = unlocked;
+  game.onAchievement = onAchievement;
   // Gancho de depuração só no servidor de desenvolvimento; removido do build pela eliminação de código morto.
   if (import.meta.env.DEV) Object.assign(window, { __game: game });
   resize();

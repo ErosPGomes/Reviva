@@ -169,6 +169,7 @@ const shared = {
   flame: new THREE.MeshBasicMaterial({ color: 0xff8c42, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }),
   core: new THREE.MeshBasicMaterial({ color: 0xbfd8ff, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }),
   charred: new THREE.MeshLambertMaterial({ color: 0x1d1b19 }),
+  tire: new THREE.MeshStandardMaterial({ color: 0x1a1b1c, roughness: 0.9 }),
 };
 shared.dark.side = THREE.DoubleSide;
 
@@ -212,6 +213,33 @@ export interface JetMesh {
   readonly group: THREE.Group;
   setThrottle(throttle: number, time: number): void;
   setPylons(left: boolean, right: boolean): void;
+  /** 1 = trem de pouso baixado, 0 = recolhido (valores intermediários animam a recolha). */
+  setGear(t: number): void;
+  /** Troca o modelo pendurado nos dois cabides: o míssil selecionado aparece na asa. */
+  setLoadout(look: MissileLook): void;
+}
+
+/** Altura do centro do jato acima do piso com o trem baixado (rodas tocando o chão). */
+const GEAR_DROP = 2.17;
+export const gearHeight = (variant: JetVariant): number => GEAR_DROP * (variant === "javali" ? 1.12 : 1);
+
+let gearGeo: { strut: THREE.BufferGeometry; wheel: THREE.BufferGeometry } | null = null;
+
+/** Trem triciclo (bequilha + 2 principais). Pivô no topo da perna: escala Y recolhe para dentro da fuselagem. */
+function createGear(): THREE.Group {
+  gearGeo ??= {
+    strut: new THREE.CylinderGeometry(0.09, 0.09, 1.5, 6).translate(0, -1.1, 0),
+    wheel: new THREE.CylinderGeometry(0.32, 0.32, 0.24, 12).rotateZ(Math.PI / 2).translate(0, -GEAR_DROP + 0.32, 0),
+  };
+  const gear = new THREE.Group();
+  for (const [x, z] of [[0, -6], [1.6, 1.5], [-1.6, 1.5]] as const) {
+    const leg = new THREE.Group();
+    leg.position.set(x, 0, z);
+    leg.add(new THREE.Mesh(gearGeo.strut, shared.dark), new THREE.Mesh(gearGeo.wheel, shared.tire));
+    gear.add(leg);
+  }
+  gear.visible = false;
+  return gear;
 }
 
 export function createJetMesh(scheme: Scheme, variant: JetVariant = "falcao"): JetMesh {
@@ -233,11 +261,15 @@ export function createJetMesh(scheme: Scheme, variant: JetVariant = "falcao"): J
     group.add(pivot);
   }
   const pylons = [1, -1].map((side) => {
-    const ms = new THREE.Mesh(g.missile, shared.missile);
+    const ms = new THREE.Group();
     ms.position.set(side * shape.pylonX, -0.6, 1.6);
+    ms.add(createMissileModel("ir"));
     group.add(ms);
     return ms;
   });
+  let look: MissileLook = "ir";
+  const gear = createGear();
+  group.add(gear);
 
   const glow = new THREE.Mesh(g.glow, shared.glow);
   const flame = new THREE.Mesh(g.flame, shared.flame);
@@ -248,6 +280,18 @@ export function createJetMesh(scheme: Scheme, variant: JetVariant = "falcao"): J
 
   return {
     group,
+    setGear(t) {
+      gear.visible = t > 0.02;
+      for (const leg of gear.children) leg.scale.y = Math.max(0.02, t);
+    },
+    setLoadout(next) {
+      if (next === look) return;
+      look = next;
+      for (const p of pylons) {
+        p.clear();
+        p.add(createMissileModel(next));
+      }
+    },
     setThrottle(t, time) {
       const flicker = 0.92 + Math.sin(time * 53) * 0.05 + Math.sin(time * 31) * 0.03;
       // Pós-combustão acima de 85%: chama longa; abaixo, só um brilho curto no bocal.
@@ -265,16 +309,185 @@ export function createJetMesh(scheme: Scheme, variant: JetVariant = "falcao"): J
   };
 }
 
-export function createMissileMesh(): THREE.Group {
+/** Míssil em voo: modelo do tipo + brilho do motor na cauda. */
+export function createMissileMesh(look: MissileLook = "ir"): THREE.Group {
   const g = jetGeometry("falcao");
   const group = new THREE.Group();
-  group.add(new THREE.Mesh(g.missile, shared.missile));
+  group.add(createMissileModel(look));
   const glow = new THREE.Mesh(g.glow, shared.glow);
+  const s = look === "rocket" ? 0.2 : 0.35 * (MISSILE_DEFS[look].r / 0.13) ** 0.5;
   // A escala também multiplica o deslocamento embutido na geometria (z = 9,85).
-  glow.scale.setScalar(0.35);
-  glow.position.z = 1.55 - 9.85 * 0.35;
+  glow.scale.setScalar(s);
+  glow.position.z = MISSILE_DEFS[look].len / 2 + 0.05 - 9.85 * s;
   group.add(glow);
   return group;
+}
+
+/* ---------- Mísseis por tipo ---------- */
+
+/**
+ * Cada míssil tem silhueta própria, para o jogador reconhecer o que carrega (no menu, na asa e em voo):
+ * IR fino com canards e domo de vidro · Radar longo e branco · AGM grosso, asas de corda longa ·
+ * Foguetes num casulo de tubos · Naval (do porta-aviões) grande, branco com faixa vermelha.
+ */
+export type MissileLook = "ir" | "radar" | "agm" | "rockets" | "rocket" | "naval";
+
+interface MissileDef {
+  readonly len: number;
+  readonly r: number;
+  readonly body: number;
+  readonly nose: number;
+  readonly band: number;
+  readonly noseLen: number;
+  readonly blunt: boolean; // domo arredondado (buscador óptico) em vez de ogiva
+  readonly fins: readonly (readonly [number, number, number])[]; // [posição ao longo do corpo (0 = cauda, 1 = ponta), envergadura, corda]
+  readonly bandAt: number;
+  readonly pod?: boolean;
+}
+
+export const MISSILE_DEFS: Record<MissileLook, MissileDef> = {
+  ir: { len: 3, r: 0.13, body: 0xc9ccce, nose: 0x1f2c38, band: 0xd9b23a, noseLen: 0.32, blunt: true, fins: [[0.82, 0.24, 0.22], [0.07, 0.36, 0.34]], bandAt: 0.72 },
+  radar: { len: 3.65, r: 0.17, body: 0xeef0f1, nose: 0xa3a8ad, band: 0x8a5a2b, noseLen: 0.75, blunt: false, fins: [[0.5, 0.28, 0.5], [0.06, 0.32, 0.36]], bandAt: 0.3 },
+  agm: { len: 2.5, r: 0.2, body: 0x6f7550, nose: 0x22323c, band: 0xe0b83a, noseLen: 0.22, blunt: true, fins: [[0.42, 0.42, 1.15], [0.05, 0.3, 0.3]], bandAt: 0.8 },
+  rockets: { len: 2.3, r: 0.33, body: 0x5d6250, nose: 0x1b1d1e, band: 0x3e4236, noseLen: 0.12, blunt: false, fins: [], bandAt: 0.5, pod: true },
+  rocket: { len: 1.5, r: 0.06, body: 0xbfc2b5, nose: 0x5a5e55, band: 0xd9b23a, noseLen: 0.22, blunt: false, fins: [[0.06, 0.12, 0.14]], bandAt: 0.7 },
+  naval: { len: 3.9, r: 0.2, body: 0xf1f2f3, nose: 0xd0d4d8, band: 0xb3342b, noseLen: 0.7, blunt: false, fins: [[0.5, 0.14, 1.6], [0.05, 0.36, 0.4]], bandAt: 0.62 },
+};
+
+const missileCache = new Map<MissileLook, { geo: THREE.BufferGeometry; mats: THREE.Material[] }>();
+
+function buildMissile(look: MissileLook): { geo: THREE.BufferGeometry; mats: THREE.Material[] } {
+  const d = MISSILE_DEFS[look];
+  const half = d.len / 2;
+  const tip = half;
+  const shoulder = half - d.noseLen;
+  // Perfis em (raio, posição): +posição = ponta. rotateX(−π/2) leva a ponta para −Z (frente do three).
+  const lathe = (pts: [number, number][], seg = 14) =>
+    new THREE.LatheGeometry(pts.map(([r, y]) => new THREE.Vector2(r, y)), seg).rotateX(-Math.PI / 2);
+  const body = lathe(d.pod
+    ? [[0, -half], [d.r * 0.7, -half], [d.r, -half + 0.25], [d.r, shoulder], [d.r * 0.98, shoulder + 0.001]]
+    : [[0, -half], [d.r * 0.85, -half], [d.r, -half + 0.08], [d.r, shoulder]]);
+  const nosePts: [number, number][] = [];
+  if (d.pod) {
+    nosePts.push([d.r * 0.98, shoulder], [d.r * 0.9, tip], [0, tip]);
+  } else {
+    for (let k = 0; k <= 8; k++) {
+      const t = k / 8;
+      // Domo: quarto de círculo; ogiva: perfil tangente afinando até a ponta.
+      const r = d.blunt ? d.r * Math.cos((t * Math.PI) / 2) : d.r * (1 - t * t);
+      const y = d.blunt ? shoulder + d.noseLen * Math.sin((t * Math.PI) / 2) : shoulder + d.noseLen * t;
+      nosePts.push([Math.max(r, 0.0001), y]);
+    }
+    nosePts.push([0, tip]);
+  }
+  const nose = lathe(nosePts);
+  const accents: THREE.BufferGeometry[] = [];
+  const band = new THREE.CylinderGeometry(d.r * 1.02, d.r * 1.02, Math.max(0.06, d.len * 0.03), 14)
+    .rotateX(Math.PI / 2)
+    .translate(0, 0, -(-half + d.bandAt * d.len));
+  accents.push(band);
+  if (d.pod) {
+    // Boca dos tubos: 7 aros escuros na face frontal do casulo.
+    for (let k = 0; k < 7; k++) {
+      const a = (k / 6) * Math.PI * 2;
+      const rr = k === 6 ? 0 : d.r * 0.55;
+      accents.push(new THREE.TorusGeometry(0.07, 0.022, 5, 10).translate(Math.cos(a) * rr, Math.sin(a) * rr, -tip - 0.01));
+    }
+  }
+  const fins: THREE.BufferGeometry[] = [];
+  for (const [at, span, chord] of d.fins) {
+    const z = -(-half + at * d.len);
+    const reach = d.r + span;
+    fins.push(new THREE.BoxGeometry(reach * 2, 0.03, chord).translate(0, 0, z));
+    fins.push(new THREE.BoxGeometry(0.03, reach * 2, chord).translate(0, 0, z));
+  }
+  // Um grupo de material por parte: 0 corpo, 1 ponta (vidro/radome), 2 faixa e tubos, 3 aletas.
+  const flat = (list: THREE.BufferGeometry[]) => {
+    const g = mergeGeometries(list.map((p) => (p.index ? p.toNonIndexed() : p)))!;
+    g.deleteAttribute("uv");
+    return g;
+  };
+  const all = [flat([body]), flat([nose]), flat(accents), ...(fins.length ? [flat(fins)] : [])];
+  const geo = mergeGeometries(all, true)!;
+  const mat = (c: number, rough = 0.5, metal = 0.2) => new THREE.MeshStandardMaterial({ color: c, roughness: rough, metalness: metal });
+  const noseMat = d.blunt && !d.pod ? new THREE.MeshPhongMaterial({ color: d.nose, specular: 0xffffff, shininess: 90 }) : mat(d.nose, 0.6, 0.1);
+  const mats = [mat(d.body), noseMat, mat(d.band, 0.6, 0.1), mat(d.body, 0.55, 0.25)];
+  return { geo, mats: mats.slice(0, all.length) };
+}
+
+/** Modelo estático do míssil (sem brilho de motor), ponta para −Z, centro no meio do corpo. */
+export function createMissileModel(look: MissileLook): THREE.Mesh {
+  let m = missileCache.get(look);
+  if (!m) missileCache.set(look, (m = buildMissile(look)));
+  return new THREE.Mesh(m.geo, m.mats);
+}
+
+/* ---------- Metralhadoras (só para a prévia do menu) ---------- */
+
+export type GunLook = "cal30" | "cal50" | "m61";
+
+export interface GunModel {
+  readonly group: THREE.Group;
+  /** Gira (rotativa) ou recua (cano único) durante a rajada. */
+  readonly barrels: THREE.Object3D;
+  /** Posição da boca do cano no espaço local do grupo. */
+  readonly muzzle: THREE.Vector3;
+}
+
+const gunMats = {
+  steel: new THREE.MeshStandardMaterial({ color: 0x3a3f44, roughness: 0.45, metalness: 0.75 }),
+  dark: new THREE.MeshStandardMaterial({ color: 0x222528, roughness: 0.6, metalness: 0.6 }),
+  brass: new THREE.MeshStandardMaterial({ color: 0xc8a14a, roughness: 0.35, metalness: 0.9 }),
+  olive: new THREE.MeshStandardMaterial({ color: 0x4f5541, roughness: 0.7, metalness: 0.3 }),
+};
+
+const tube = (r: number, len: number, z: number, seg = 10) => new THREE.CylinderGeometry(r, r, len, seg).rotateX(Math.PI / 2).translate(0, 0, z);
+
+/** Cano para −Z. Medidas aproximadas das armas reais (M240, M2 Browning, M61 Vulcan). */
+export function createGunModel(look: GunLook): GunModel {
+  const group = new THREE.Group();
+  const barrels = new THREE.Group();
+  group.add(barrels);
+  const mesh = (g: THREE.BufferGeometry, m: THREE.Material, parent: THREE.Object3D = group) => parent.add(new THREE.Mesh(g, m));
+  // Cinta de munição: cartuchos de latão pendurados à esquerda do receptor.
+  const belt = (n: number, size: number, x: number, z0: number) => {
+    const geo = tube(size * 0.3, size * 2.2, 0, 6).rotateY(Math.PI / 2);
+    for (let k = 0; k < n; k++) {
+      const c = new THREE.Mesh(geo, gunMats.brass);
+      c.position.set(x - size * 1.2, -k * size * 0.75 - size, z0);
+      group.add(c);
+    }
+  };
+  if (look === "cal30") {
+    mesh(new THREE.BoxGeometry(0.11, 0.16, 0.62).translate(0, 0, 0.1), gunMats.dark);
+    mesh(new THREE.BoxGeometry(0.09, 0.05, 0.3).translate(0, 0.1, 0.05), gunMats.steel);
+    mesh(tube(0.017, 0.62, -0.5), gunMats.steel, barrels);
+    mesh(tube(0.026, 0.07, -0.84), gunMats.dark, barrels);
+    mesh(tube(0.03, 0.18, -0.26), gunMats.dark, barrels);
+    belt(7, 0.03, -0.06, 0.1);
+    return { group, barrels, muzzle: new THREE.Vector3(0, 0, -0.9) };
+  }
+  if (look === "cal50") {
+    mesh(new THREE.BoxGeometry(0.2, 0.24, 0.85).translate(0, 0, 0.25), gunMats.dark);
+    mesh(new THREE.BoxGeometry(0.16, 0.06, 0.4).translate(0, 0.15, 0.2), gunMats.steel);
+    for (const s of [-1, 1]) mesh(tube(0.018, 0.18, 0).rotateX(Math.PI / 2).translate(s * 0.09, -0.03, 0.75), gunMats.olive);
+    mesh(tube(0.055, 0.42, -0.36, 12), gunMats.steel, barrels);
+    for (let k = 0; k < 5; k++) mesh(tube(0.058, 0.025, -0.2 - k * 0.075, 12), gunMats.dark, barrels);
+    mesh(tube(0.03, 1.15, -1.1), gunMats.steel, barrels);
+    mesh(tube(0.04, 0.08, -1.7), gunMats.dark, barrels);
+    belt(8, 0.05, -0.1, 0.25);
+    return { group, barrels, muzzle: new THREE.Vector3(0, 0, -1.76) };
+  }
+  // M61 Vulcan: 6 canos em torno do eixo, carcaça com motor de acionamento e tambor de munição.
+  mesh(tube(0.17, 0.5, 0.35, 16), gunMats.dark);
+  mesh(new THREE.BoxGeometry(0.16, 0.14, 0.32).translate(0.18, 0.08, 0.45), gunMats.olive);
+  mesh(tube(0.26, 0.5, 0.95, 18), gunMats.olive);
+  for (let k = 0; k < 6; k++) {
+    const a = (k / 6) * Math.PI * 2;
+    mesh(tube(0.028, 1.5, -0.65).translate(Math.cos(a) * 0.085, Math.sin(a) * 0.085, 0), gunMats.steel, barrels);
+  }
+  for (const z of [-0.3, -0.9, -1.33]) mesh(tube(0.135, 0.05, z, 16), gunMats.dark, barrels);
+  return { group, barrels, muzzle: new THREE.Vector3(0, 0, -1.42) };
 }
 
 let shadowRes: { geo: THREE.BufferGeometry; tex: THREE.Texture } | null = null;

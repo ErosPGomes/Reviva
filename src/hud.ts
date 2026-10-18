@@ -2,7 +2,10 @@ import * as THREE from "three";
 import { Aircraft } from "./aircraft";
 import { GroundTarget } from "./ground";
 import { bankAngle, forwardOf, pitchAngle } from "./flight";
-import { COLORS, type Game } from "./game";
+import { COLORS, NAVAL_COLOR, type Game } from "./game";
+import { ACHIEVEMENTS } from "./achievements";
+import { CARRIER_POS } from "./carrier";
+import { NAVAL } from "./naval";
 import { BOOSTS, BOOST_ORDER, GUNS, MISSILES } from "./loadout";
 import { PHASES } from "./campaign";
 import { DRONE_SHOTS, WARHEADS } from "./drone";
@@ -126,10 +129,68 @@ export class Hud {
     const below = this.scoreboard(g, compact);
     this.objectives(g, below + 22);
     this.droneBar(g, compact);
+    this.navalStatus(g, compact);
     this.warnings(g);
+    this.takeoffBanner(g);
+    this.achievementToast(g);
     this.popups(g);
     this.messages(g);
     this.feed(g, compact);
+  }
+
+  /** Salvas navais disponíveis, à esquerda da barra do drone (mesma linha). */
+  private navalStatus(g: Game, compact: boolean): void {
+    const w = compact ? 230 : 300;
+    const top = this.touchLayout && this.w < 640;
+    const x = this.w / 2 - w / 2;
+    const y = (top ? 134 : this.h - 52 - (this.touchLayout ? 8 : 16) - 22) - 7;
+    if (!g.navalUnlocked) {
+      this.text("NAVAL BLOQUEADA", x, y, 9, "rgba(127,208,255,0.4)", "left", 700);
+      return;
+    }
+    const n = g.navalCharges;
+    const pips = "◆".repeat(n) + "◇".repeat(Math.max(0, NAVAL.maxCharges - n));
+    const key = n > 0 && !this.touchLayout ? " · V" : "";
+    this.text(`NAVAL ${pips}${key}`, x, y, 9, n > 0 ? NAVAL_COLOR : "rgba(127,208,255,0.45)", "left", 700);
+  }
+
+  /** Cartão da decolagem: etapa da catapulta, velocidade no lançamento e como antecipar. */
+  private takeoffBanner(g: Game): void {
+    const T = g.takeoff;
+    if (!T.active) return;
+    const cy = this.h * 0.3;
+    const title = T.stage === "ready" ? "CATAPULTA 1" : T.stage === "launch" ? "LANÇAMENTO" : "DECOLAGEM";
+    const sub =
+      T.stage === "ready"
+        ? this.touchLayout ? "Toque em CANHÃO para lançar já" : "Espaço para lançar já"
+        : T.stage === "launch"
+          ? `${Math.round(g.player.flight.speed * 3.6)} km/h`
+          : "Recolhendo o trem de pouso";
+    this.text(title, this.w / 2, cy, 24, COLORS.white, "center", 700);
+    this.text(sub, this.w / 2, cy + 26, 12, COLORS.teal, "center", 600);
+    if (T.stage === "ready") this.bar(this.w / 2 - 80, cy + 42, 160, 4, T.t / 2.6, COLORS.amber);
+  }
+
+  /** Faixa "Conquista desbloqueada" por 5 s, com entrada e saída suaves. */
+  private achievementToast(g: Game): void {
+    const a = g.achievementToast;
+    if (!a) return;
+    const age = g.time - a.t;
+    if (age > 5) return;
+    const spec = ACHIEVEMENTS[a.id];
+    const c = this.ctx;
+    c.globalAlpha = clamp(Math.min(age * 4, (5 - age) * 2), 0, 1);
+    const w = Math.min(440, this.w - 32);
+    const x = this.w / 2 - w / 2;
+    // Abaixo do retículo: o topo central é das mensagens e o meio, da mira.
+    const y = this.h * 0.64;
+    this.panel(x, y, w, 60);
+    c.fillStyle = COLORS.amber;
+    c.fillRect(x, y + 8, 3, 44);
+    this.text("CONQUISTA DESBLOQUEADA", x + 16, y + 14, 9, COLORS.amber, "left", 700);
+    this.text(spec.title.toUpperCase(), x + 16, y + 32, 15, COLORS.white, "left", 700);
+    this.text(spec.hud, x + 16, y + 48, 10, a.id === "guardiao" ? NAVAL_COLOR : TEAL_DIM, "left", 600);
+    c.globalAlpha = 1;
   }
 
   /* ---------- primitivas ---------- */
@@ -882,6 +943,20 @@ export class Hud {
     for (const b of g.bases) {
       const [x, y] = clampRim(toRadar(b.center.x, b.center.z));
       this.text(b.id, x, y, 10, b.captured ? COLORS.blue : COLORS.amber, "center", 700);
+    }
+    {
+      // Porta-aviões (sempre visível, preso à borda) e mísseis navais em voo.
+      const [x, y] = clampRim(toRadar(CARRIER_POS.x, CARRIER_POS.z));
+      c.fillStyle = NAVAL_COLOR;
+      c.fillRect(x - 2, y - 5, 4, 10);
+      c.fillStyle = COLORS.blue;
+      for (const m of g.missiles.active) {
+        if (m.owner !== g.carrier.unit) continue;
+        const [mx, my] = clampRim(toRadar(m.pos.x, m.pos.z));
+        c.beginPath();
+        c.arc(mx, my, 2, 0, TAU);
+        c.fill();
+      }
     }
     for (const r of g.rings.rings) {
       if (!r.active) continue;

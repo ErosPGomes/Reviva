@@ -4,7 +4,68 @@ import { BASES, BASE_HALF, FIELD_HALF, FIELD_TEX, generateFieldTexture, generate
 import { hash2, valueNoise } from "./noise";
 import { BillboardBatch } from "./particles";
 import { cloudTexture } from "./textures";
-import { FARM_R0, FARM_R1, Terrain, createTerrainMesh } from "./terrain";
+import { FARM_R0, FARM_R1, LAKE, LAKE_SHORE, Terrain, WATER_LEVEL, createTerrainMesh, lakeDist } from "./terrain";
+
+/** Nada de árvore ou fazenda dentro da baía (nem na faixa de margem). */
+const dry = (x: number, z: number, margin = 0.08): boolean => lakeDist(x, z) > LAKE_SHORE + margin;
+
+/**
+ * Mapa normal de ondas: soma de senoides com frequências inteiras, então a textura é periódica e pode
+ * repetir sem costura. Deslocar os offsets de dois mapas em direções diferentes anima a superfície.
+ */
+function waterNormals(): THREE.DataTexture {
+  const n = 128;
+  const data = new Uint8Array(n * n * 4);
+  const waves = [
+    [3, 1, 0.9, 0.3], [1, 4, 0.7, 1.7], [5, -2, 0.45, 2.4], [-2, 7, 0.3, 0.8], [8, 3, 0.2, 4.1],
+  ] as const;
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      let dx = 0;
+      let dy = 0;
+      for (const [kx, ky, a, ph] of waves) {
+        const t = ((kx * x + ky * y) / n) * Math.PI * 2 + ph;
+        dx += a * kx * Math.cos(t);
+        dy += a * ky * Math.cos(t);
+      }
+      const nx = -dx * 0.06;
+      const ny = -dy * 0.06;
+      const len = Math.hypot(nx, ny, 1);
+      const i = (y * n + x) * 4;
+      data[i] = Math.round(((nx / len) * 0.5 + 0.5) * 255);
+      data[i + 1] = Math.round(((ny / len) * 0.5 + 0.5) * 255);
+      data[i + 2] = Math.round(((1 / len) * 0.5 + 0.5) * 255);
+      data[i + 3] = 255;
+    }
+  }
+  const tex = new THREE.DataTexture(data, n, n, THREE.RGBAFormat);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.generateMipmaps = true;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+function buildWater(scene: THREE.Scene): (time: number) => void {
+  const normalMap = waterNormals();
+  normalMap.repeat.set(70, 48);
+  const mat = new THREE.MeshPhongMaterial({
+    color: 0x1f4a5c,
+    specular: 0xbfd8e6,
+    shininess: 120,
+    normalMap,
+    normalScale: new THREE.Vector2(0.6, 0.6),
+  });
+  const water = new THREE.Mesh(new THREE.CircleGeometry(1, 96).rotateX(-Math.PI / 2), mat);
+  water.scale.set(LAKE.rx * LAKE_SHORE, 1, LAKE.rz * LAKE_SHORE);
+  water.position.set(LAKE.x, WATER_LEVEL, LAKE.z);
+  water.renderOrder = 0;
+  scene.add(water);
+  return (time) => {
+    normalMap.offset.set(time * 0.012, time * 0.007);
+  };
+}
 
 export type Quality = "high" | "low";
 
@@ -97,7 +158,9 @@ function buildTrees(scene: THREE.Scene, terrain: Terrain, layout: FarmLayout, qu
       const h = hash2(Math.floor(s.x0 + k * 3), Math.floor(s.z0 - k * 5), 61);
       if (valueNoise((s.x0 + s.z0) / 50 + k / 6, 3.3, 5) < 0.38) continue;
       const t = (k + 0.5 + (h - 0.5) * 0.6) / count;
-      leafPts.push(s.x0 + (s.x1 - s.x0) * t + (h - 0.5) * 3, s.z0 + (s.z1 - s.z0) * t + (hash2(k, 7, 63) - 0.5) * 3);
+      const tx = s.x0 + (s.x1 - s.x0) * t + (h - 0.5) * 3;
+      const tz = s.z0 + (s.z1 - s.z0) * t + (hash2(k, 7, 63) - 0.5) * 3;
+      if (dry(tx, tz)) leafPts.push(tx, tz);
     }
   }
   // Mata na transição planície → serra, agrupada por ruído de baixa frequência.
@@ -107,7 +170,7 @@ function buildTrees(scene: THREE.Scene, terrain: Terrain, layout: FarmLayout, qu
     const r = FARM_R0 - 300 + hash2(tries, 2, 73) * (FARM_R1 + 1800 - FARM_R0);
     const x = Math.cos(a) * r;
     const z = Math.sin(a) * r;
-    if (valueNoise(x / 650, z / 650, 77) < 0.5) continue;
+    if (valueNoise(x / 650, z / 650, 77) < 0.5 || !dry(x, z)) continue;
     const h = terrain.heightAt(x, z);
     if (h > 650) continue;
     const slope = Math.abs(terrain.heightAt(x + 20, z) - h) + Math.abs(terrain.heightAt(x, z + 20) - h);
@@ -164,6 +227,7 @@ function buildFarms(scene: THREE.Scene, terrain: Terrain, layout: FarmLayout): v
   const domes: Part[] = [];
 
   for (const f of layout.farmsteads) {
+    if (!dry(f.x, f.z, 0.2)) continue;
     const h = (k: number) => hash2(f.seed, k, 91);
     const ground = terrain.heightAt(f.x, f.z) - 0.6;
     const barnColor = h(1) < 0.55 ? 0x8a3a2c : 0x9aa1a3;
@@ -288,6 +352,7 @@ export function buildWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer, qu
   buildTrees(scene, terrain, layout, quality);
   buildFarms(scene, terrain, layout);
   buildBaseStructures(scene, terrain);
+  const animateWater = buildWater(scene);
   const clouds = buildClouds(scene, fog);
 
   return {
@@ -298,6 +363,7 @@ export function buildWorld(scene: THREE.Scene, renderer: THREE.WebGLRenderer, qu
     coldObjects: [sky, clouds],
     update(camera) {
       sky.position.copy(camera.position);
+      animateWater(performance.now() / 1000);
     },
   };
 }

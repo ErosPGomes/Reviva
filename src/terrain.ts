@@ -10,6 +10,23 @@ export const FARM_R1 = 6000;
 /** Raio de combate; além disso o jogador recebe aviso e depois é abatido. */
 export const ARENA_RADIUS = 7000;
 
+/**
+ * Baía ao sul onde fica o porta-aviões: elipse rebaixada com espelho d'água em WATER_LEVEL. O fundo fica bem
+ * abaixo da água (sem z-fighting); a colisão usa a superfície (`Terrain.heightAt` limita pela água).
+ */
+export const WATER_LEVEL = -3;
+export const LAKE = { x: 0, z: 4300, rx: 1700, rz: 1150 } as const;
+/** Fim da transição margem → terreno, em unidades da elipse (1 = borda do fundo plano). */
+export const LAKE_SHORE = 1.4;
+const LAKE_FLOOR = -16;
+
+/** Distância normalizada ao centro da baía (< 1 no fundo, ~1,2 na linha d'água). */
+export function lakeDist(x: number, z: number): number {
+  const dx = (x - LAKE.x) / LAKE.rx;
+  const dz = (z - LAKE.z) / LAKE.rz;
+  return Math.sqrt(dx * dx + dz * dz);
+}
+
 export function rawHeight(x: number, z: number): number {
   const r = Math.hypot(x, z);
   let h = (fbm(x / 1500, z / 1500, 3, 11) - 0.5) * 36;
@@ -19,6 +36,12 @@ export function rawHeight(x: number, z: number): number {
     const ridged = 1 - Math.abs(fbm(x / 1700, z / 1700, 4, 23) * 2 - 1);
     const massif = 0.45 + fbm(x / 3200, z / 3200, 2, 5);
     h += m * m * (120 + ridged * ridged * 1100 * massif) + m * 80;
+  }
+  const d = lakeDist(x, z);
+  if (d < LAKE_SHORE) {
+    // Margem: do fundo até um terreno que fica sempre acima da água (o espelho termina escondido sob a margem).
+    const s = smoothstep(0.8, LAKE_SHORE, d);
+    h = LAKE_FLOOR + (Math.max(h, 2) - LAKE_FLOOR) * s;
   }
   return h;
 }
@@ -33,7 +56,11 @@ export class Terrain {
   readonly step: number;
   readonly heights: Float32Array;
 
+  /** Só o terreno real tem a baía; grades de teste com outra função de altura ficam sem água. */
+  readonly water: boolean;
+
   constructor(n = GRID_N, half = WORLD_HALF, fn: (x: number, z: number) => number = rawHeight) {
+    this.water = fn === rawHeight;
     this.n = n;
     this.half = half;
     this.step = (2 * half) / n;
@@ -49,8 +76,14 @@ export class Terrain {
     return this.heights[j * (this.n + 1) + i] ?? 0;
   }
 
-  /** O(1). Triangulação idêntica à de `createTerrainMesh`: diagonal de (i+1, j) a (i, j+1). */
+  /** Altura da superfície sólida: terreno ou, dentro da baía, o espelho d'água (avião e míssil "batem" na água). */
   heightAt(x: number, z: number): number {
+    const h = this.groundAt(x, z);
+    return this.water && h < WATER_LEVEL && lakeDist(x, z) < LAKE_SHORE ? WATER_LEVEL : h;
+  }
+
+  /** O(1). Triangulação idêntica à de `createTerrainMesh`: diagonal de (i+1, j) a (i, j+1). */
+  groundAt(x: number, z: number): number {
     const n = this.n;
     const fx = Math.min(Math.max((x + this.half) / this.step, 0), n - 1e-6);
     const fz = Math.min(Math.max((z + this.half) / this.step, 0), n - 1e-6);
@@ -75,10 +108,21 @@ const TERRAIN_FRAG_HEAD = /* glsl */ `
 uniform sampler2D uFields;
 uniform float uFieldHalf;
 uniform vec2 uFarm;
+uniform vec4 uLake;
 varying vec3 vWPos;
 varying float vNy;
 
+vec3 landColor();
+
 vec3 terrainColor() {
+  // Margem da baía: faixa de areia/lodo onde o terreno encosta na água.
+  float ld = length((vWPos.xz - uLake.xy) / uLake.zw);
+  float beach = (1.0 - smoothstep(1.1, 1.3, ld)) * (1.0 - smoothstep(4.0, 9.0, vWPos.y));
+  vec3 sand = vec3(0.36, 0.31, 0.2);
+  return mix(landColor(), sand, beach);
+}
+
+vec3 landColor() {
   vec2 fuv = (vWPos.xz + uFieldHalf) / (2.0 * uFieldHalf);
   vec4 f = texture2D(uFields, fuv);
   float r = length(vWPos.xz);
@@ -143,6 +187,7 @@ export function createTerrainMesh(t: Terrain, fields: THREE.Texture, fieldHalf: 
     shader.uniforms.uFields = { value: fields };
     shader.uniforms.uFieldHalf = { value: fieldHalf };
     shader.uniforms.uFarm = { value: new THREE.Vector2(FARM_R0, FARM_R1) };
+    shader.uniforms.uLake = { value: new THREE.Vector4(LAKE.x, LAKE.z, LAKE.rx, LAKE.rz) };
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", `#include <common>\n${TERRAIN_VERT_HEAD}`)
       .replace("#include <begin_vertex>", "#include <begin_vertex>\nvWPos = position;\nvNy = normal.y;");
@@ -150,7 +195,7 @@ export function createTerrainMesh(t: Terrain, fields: THREE.Texture, fieldHalf: 
       .replace("#include <common>", `#include <common>\n${TERRAIN_FRAG_HEAD}`)
       .replace("#include <map_fragment>", "diffuseColor.rgb *= terrainColor();");
   };
-  mat.customProgramCacheKey = () => "terrain-v1";
+  mat.customProgramCacheKey = () => "terrain-v2";
 
   const mesh = new THREE.Mesh(geo, mat);
   mesh.matrixAutoUpdate = false;

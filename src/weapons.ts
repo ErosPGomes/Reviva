@@ -2,7 +2,7 @@ import * as THREE from "three";
 import type { Effects } from "./effects";
 import { FX } from "./effects";
 import { segmentPointDistSq, turnToward, randSigned, rand } from "./math";
-import { createMissileMesh } from "./models";
+import { createMissileMesh, type MissileLook } from "./models";
 import type { Terrain } from "./terrain";
 import { WORLD_HALF } from "./terrain";
 import type { Combatant, Team, Trackable } from "./types";
@@ -223,6 +223,9 @@ export interface MissileSpec {
   readonly maxSpeed: number;
   readonly turnRate: number; // rad/s
   readonly gimbal: number; // ângulo máximo entre eixo e alvo antes de perder a trava
+  readonly look?: MissileLook; // modelo 3D (padrão: IR)
+  readonly life?: number; // s até autodestruir (padrão 10)
+  readonly guideDelay?: number; // s de voo reto antes de guiar (lançamento vertical do navio usa mais)
 }
 
 export const ENEMY_MISSILE: MissileSpec = { damage: 48, maxSpeed: 640, turnRate: 0.72, gimbal: 1.15, flareResist: 0.2, splash: 30, motorTime: 2.6 };
@@ -241,7 +244,7 @@ export class Missile {
   trail = 0;
   done = false;
 
-  constructor(readonly mesh: THREE.Group) {}
+  constructor(readonly mesh: THREE.Group, readonly look: MissileLook) {}
 }
 
 const MISSILE_LIFE = 10;
@@ -249,15 +252,17 @@ const PROXIMITY = 13;
 
 export class MissileSystem {
   readonly active: Missile[] = [];
-  private readonly spare: THREE.Group[] = [];
+  /** Malhas devolvidas, separadas por modelo: reaproveitar não pode trocar um foguete por um míssil naval. */
+  private readonly spare = new Map<MissileLook, THREE.Group[]>();
   private readonly look = new THREE.Matrix4();
 
   constructor(private readonly scene: THREE.Scene, private readonly terrain: Terrain, private readonly fx: Effects, private readonly events: WeaponEvents) {}
 
   launch(owner: Combatant, team: Team, origin: THREE.Vector3, dir: THREE.Vector3, speed: number, target: Trackable | null, spec: MissileSpec, damageMult = 1): Missile {
-    const mesh = this.spare.pop() ?? createMissileMesh();
+    const look = spec.look ?? "ir";
+    const mesh = this.spare.get(look)?.pop() ?? createMissileMesh(look);
     this.scene.add(mesh);
-    const m = new Missile(mesh);
+    const m = new Missile(mesh, look);
     m.pos.copy(origin);
     m.prev.copy(origin);
     m.dir.copy(dir).normalize();
@@ -278,7 +283,9 @@ export class MissileSystem {
 
   private release(m: Missile): void {
     this.scene.remove(m.mesh);
-    this.spare.push(m.mesh);
+    let list = this.spare.get(m.look);
+    if (!list) this.spare.set(m.look, (list = []));
+    list.push(m.mesh);
   }
 
   /** Flares: cada míssil que persegue `victim` tem `chance × (1 − flareResist)` de trocar de alvo. */
@@ -312,7 +319,7 @@ export class MissileSystem {
       m.speed = m.age < m.spec.motorTime ? Math.min(m.spec.maxSpeed, m.speed + 240 * dt) : Math.max(150, m.speed - 30 * dt);
 
       if (m.target && !m.target.isAlive()) m.target = null;
-      if (m.target && m.age > 0.25) {
+      if (m.target && m.age > (m.spec.guideDelay ?? 0.25)) {
         // Perseguição com antecipação (lead) — t_go ≈ distância / velocidade do míssil.
         const tgo = Math.min(4, m.pos.distanceTo(m.target.position) / Math.max(m.speed, 1));
         _tmp.copy(m.target.position).addScaledVector(m.target.velocity, tgo).sub(m.pos).normalize();
@@ -336,7 +343,7 @@ export class MissileSystem {
       const nearFlare = tgt instanceof Flare && m.pos.distanceTo(tgt.position) < 10;
       const ground = m.pos.y < this.terrain.heightAt(m.pos.x, m.pos.z);
 
-      if (hit || ground || nearFlare || m.age > MISSILE_LIFE) {
+      if (hit || ground || nearFlare || m.age > (m.spec.life ?? MISSILE_LIFE)) {
         const dmg = m.spec.damage * m.damageMult;
         if (hit) this.events.hit(hit, dmg, m.owner, m.pos, "missile");
         if (hit || ground || nearFlare) {

@@ -13,6 +13,7 @@ export const FX = {
   dust: P({ life: [1.4, 2.4], size0: [2.5, 4], size1: [10, 15], c0: 0x8c7b5c, c1: 0xa89a7c, alpha: 0.6, drag: 2.2, buoy: 1.2, fadeIn: 0.04, spin: 0.5 }),
   flak: P({ life: [2.6, 3.6], size0: [5, 7], size1: [18, 24], c0: 0x232323, c1: 0x58585a, alpha: 0.85, drag: 1.6, buoy: 0.4, fadeIn: 0.03, spin: 0.3 }),
   flareSmoke: P({ life: [1.2, 1.8], size0: [1.4, 2], size1: [5, 7], c0: 0xf2f2f0, c1: 0xcfcfcd, alpha: 0.4, drag: 1.4, buoy: 1, fadeIn: 0.03, spin: 0.6 }),
+  steam: P({ life: [1.2, 2], size0: [2, 3.2], size1: [9, 14], c0: 0xffffff, c1: 0xe8ecef, alpha: 0.42, drag: 1.6, buoy: 2.5, fadeIn: 0.05, spin: 0.4 }),
   vapor: P({ life: [0.5, 0.8], size0: [0.6, 0.9], size1: [2, 3], c0: 0xffffff, c1: 0xffffff, alpha: 0.28, drag: 0.5, buoy: 0, fadeIn: 0.05, spin: 0 }),
   flash: P({ life: [0.14, 0.2], size0: [26, 34], size1: [40, 52], c0: 0xfff1c4, c1: 0xffa040, alpha: 1, drag: 0, buoy: 0, fadeIn: 0.001, spin: 0 }),
   fire: P({ life: [0.5, 0.9], size0: [6, 9], size1: [12, 18], c0: 0xffd27a, c1: 0xff4a12, alpha: 0.9, drag: 2.2, buoy: 4, fadeIn: 0.02, spin: 1.5 }),
